@@ -13,6 +13,7 @@ class Args:
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.10"
+    panda_move_home: bool = False
 
 
 def launch_robot_server(args: Args):
@@ -77,7 +78,7 @@ def launch_robot_server(args: Args):
         elif args.robot == "panda":
             from gello.robots.panda import PandaRobot
 
-            robot = PandaRobot(robot_ip=args.robot_ip)
+            robot = PandaRobot(robot_ip=args.robot_ip, move_home=args.panda_move_home)
         elif args.robot == "bimanual_ur":
             from gello.robots.ur import URRobot
 

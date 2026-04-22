@@ -90,6 +90,9 @@ controller_interface::return_type JointImpedanceController::update(
     for (int i = 0; i < num_joints; ++i) {
       q_goal(i) = gello_position_values_[i];
     }
+    if (align_to_current_robot_pose_ && gello_alignment_initialized_) {
+      q_goal += gello_to_robot_offset_;
+    }
   }
 
   tau_d_calculated = calculateTauDGains_(q_goal);
@@ -124,6 +127,7 @@ CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_id", "");
     auto_declare<std::vector<double>>("k_gains", {});
     auto_declare<std::vector<double>>("d_gains", {});
+    auto_declare<bool>("align_to_current_robot_pose", true);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception thrown during init stage with message: %s \n", e.what());
     return CallbackReturn::ERROR;
@@ -145,6 +149,7 @@ CallbackReturn JointImpedanceController::on_configure(
   auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
   auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
   auto k_alpha = get_node()->get_parameter("k_alpha").as_double();
+  align_to_current_robot_pose_ = get_node()->get_parameter("align_to_current_robot_pose").as_bool();
 
   if (!validateGains_(k_gains, "k_gains") || !validateGains_(d_gains, "d_gains")) {
     return CallbackReturn::FAILURE;
@@ -188,6 +193,8 @@ CallbackReturn JointImpedanceController::on_activate(
   last_joint_state_time_ = get_node()->now();
   dq_filtered_.setZero();
   start_time_ = this->get_node()->now();
+  gello_alignment_initialized_ = false;
+  gello_to_robot_offset_.setZero();
 
   return CallbackReturn::SUCCESS;
 }
@@ -257,6 +264,18 @@ bool JointImpedanceController::initializeMotionGenerator_() {
   for (int i = 0; i < num_joints; ++i) {
     q_goal(i) = gello_position_values_[i];
   }
+
+  if (align_to_current_robot_pose_ && !gello_alignment_initialized_) {
+    gello_to_robot_offset_ = q_ - q_goal;
+    gello_alignment_initialized_ = true;
+    RCLCPP_INFO(get_node()->get_logger(),
+                "Initialized GELLO alignment offset to current robot pose.");
+  }
+
+  if (align_to_current_robot_pose_) {
+    q_goal += gello_to_robot_offset_;
+  }
+
   RCLCPP_INFO(get_node()->get_logger(), "q_goal of motion generator: [%f, %f, %f, %f, %f, %f, %f]",
               q_goal(0), q_goal(1), q_goal(2), q_goal(3), q_goal(4), q_goal(5), q_goal(6));
 

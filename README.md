@@ -246,6 +246,8 @@ python experiments/launch_nodes.py --robot <sim_ur|sim_panda|sim_xarm>
 python experiments/launch_nodes.py --robot <ur|panda|xarm>
 ```
 
+> **Panda note:** By default, the Panda node now keeps the robot at its current pose on startup (no automatic `go_home`) to avoid an initial pose jump when syncing with GELLO. If you explicitly want homing on startup, launch with `--panda-move-home True`.
+
 **2. Launch GELLO controller:**
 ```bash
 python experiments/run_env.py --agent=gello
