@@ -17,13 +17,10 @@ class DynamixelRobotConfig:
     """The joint offsets of GELLO. There needs to be a joint offset for each joint_id and should be a multiple of pi/2."""
 
     joint_signs: Sequence[int]
-    """The joint signs of GELLO. There needs to be a joint sign for each joint_id and should be either 1 or -1.
-
-    This will be different for each arm design. Refernce the examples below for the correct signs for your robot.
-    """
+    """The joint signs of GELLO. There needs to be a joint sign for each joint_id and should be either 1 or -1."""
 
     gripper_config: Tuple[int, int, int]
-    """The gripper config of GELLO. This is a tuple of (gripper_joint_id, degrees in open_position, degrees in closed_position)."""
+    """(gripper_joint_id, degrees in open_position, degrees in closed_position)."""
 
     def __post_init__(self):
         assert len(self.joint_ids) == len(self.joint_offsets)
@@ -48,13 +45,13 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
         joint_ids=(1, 2, 3, 4, 5, 6, 7),
         joint_offsets=(
-            3 * np.pi / 2,
-            2 * np.pi / 2,
+            0 * np.pi / 2,
+            0 * np.pi / 2,
+            0 * np.pi / 2,
             1 * np.pi / 2,
-            4 * np.pi / 2,
-            -2 * np.pi / 2 + 2 * np.pi,
-            3 * np.pi / 2,
-            4 * np.pi / 2,
+            0 * np.pi / 2,
+            1 * np.pi / 2,
+            0 * np.pi / 2,
         ),
         joint_signs=(1, -1, 1, 1, 1, -1, 1),
         gripper_config=(8, 195, 152),
@@ -62,20 +59,16 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
     # yam
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA2U4GA-if00-port0": DynamixelRobotConfig(
         joint_ids=(1, 2, 3, 4, 5, 6),
-        joint_offsets=[
+        joint_offsets=(
             0 * np.pi,
             2 * np.pi / 2,
             4 * np.pi / 2,
             6 * np.pi / 6,
             5 * np.pi / 3,
             2 * np.pi / 2,
-        ],
+        ),
         joint_signs=(1, -1, -1, -1, 1, 1),
-        gripper_config=(
-            7,
-            -30,
-            24,
-        ),  # Reversed: now starts open (-30) and closes on press (24)
+        gripper_config=(7, -30, 24),
     ),
     # Left UR
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT7WBEIA-if00-port0": DynamixelRobotConfig(
@@ -105,6 +98,21 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         joint_signs=(1, 1, -1, 1, 1, 1),
         gripper_config=(7, 286, 248),
     ),
+    # Panda / Franka
+    "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA7NM37-if00-port0": DynamixelRobotConfig(
+        joint_ids=(1, 2, 3, 4, 5, 6, 7),
+        joint_offsets=(
+            1*np.pi/2,
+            1*np.pi/2,
+            0*np.pi/2,
+            1*np.pi/2,
+            2*np.pi/2,
+            2*np.pi/2,
+            2*np.pi/2,
+        ),
+        joint_signs=(1, -1, 1, -1, 1, -1, 1),
+        gripper_config=(8, 110, 68),
+    ),
 }
 
 
@@ -115,9 +123,9 @@ class GelloAgent(Agent):
         dynamixel_config: Optional[DynamixelRobotConfig] = None,
         start_joints: Optional[np.ndarray] = None,
     ):
-        # Ensure start_joints is a numpy array if provided
         if start_joints is not None and not isinstance(start_joints, np.ndarray):
             start_joints = np.array(start_joints)
+
         if dynamixel_config is not None:
             self._robot = dynamixel_config.make_robot(
                 port=port, start_joints=start_joints
