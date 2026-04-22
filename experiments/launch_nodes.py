@@ -14,6 +14,7 @@ class Args:
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.10"
     panda_move_home: bool = False
+    panda_gripper_startup_cycle: bool = False
 
 
 def launch_robot_server(args: Args):
@@ -78,7 +79,11 @@ def launch_robot_server(args: Args):
         elif args.robot == "panda":
             from gello.robots.panda import PandaRobot
 
-            robot = PandaRobot(robot_ip=args.robot_ip, move_home=args.panda_move_home)
+            robot = PandaRobot(
+                robot_ip=args.robot_ip,
+                move_home=args.panda_move_home,
+                run_gripper_startup_cycle=args.panda_gripper_startup_cycle,
+            )
         elif args.robot == "bimanual_ur":
             from gello.robots.ur import URRobot
 

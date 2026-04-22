@@ -13,6 +13,7 @@ GRIPPER_MAX_STEP = 0.015
 GRIPPER_INIT_SPEED = 180
 GRIPPER_INIT_FORCE = 120
 GRIPPER_INIT_SETTLE_S = 0.15
+GRIPPER_INIT_CLOSE_RATIO = 0.35
 
 
 class PandaRobot(Robot):
@@ -22,7 +23,7 @@ class PandaRobot(Robot):
         self,
         robot_ip: str = "100.97.47.74",
         move_home: bool = False,
-        run_gripper_startup_cycle: bool = True,
+        run_gripper_startup_cycle: bool = False,
     ):
         from polymetis import GripperInterface, RobotInterface
 
@@ -44,7 +45,9 @@ class PandaRobot(Robot):
             )
             time.sleep(GRIPPER_INIT_SETTLE_S)
             self.gripper.goto(
-                width=0.0, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+                width=MAX_OPEN * GRIPPER_INIT_CLOSE_RATIO,
+                speed=GRIPPER_INIT_SPEED,
+                force=GRIPPER_INIT_FORCE,
             )
             time.sleep(GRIPPER_INIT_SETTLE_S)
             self.gripper.goto(
