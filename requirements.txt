@@ -19,3 +19,4 @@ xarm
 xarm-python-sdk
 numpy-quaternion
 termcolor
+cmeel-assimp>=5.4.3,<6
