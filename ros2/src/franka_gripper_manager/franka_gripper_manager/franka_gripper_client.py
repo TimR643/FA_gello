@@ -1,5 +1,6 @@
 import rclpy
 import time
+from typing import Optional
 from rclpy.node import Node
 from franka_msgs.action import Move
 from franka_msgs.action import Homing
@@ -38,9 +39,10 @@ class GripperClient(Node):
         self._ACTION_SERVER_TIMEOUT = 10.0
         self._MIN_GRIPPER_WIDTH_PERCENT = 0.0
         self._MAX_GRIPPER_WIDTH_PERCENT = 1.0
-        self._gripper_command_transmitted = True
+        self._COMMAND_EPSILON = 1e-3
         self._max_width = 0.0
         self._last_gripper_command = self._max_width * self._MAX_GRIPPER_WIDTH_PERCENT
+        self._active_goal_handle: Optional[rclpy.action.client.ClientGoalHandle] = None
 
         self.get_logger().info("Initializing gripper client...")
         self._home_gripper(homing_action_topic)
@@ -111,14 +113,21 @@ class GripperClient(Node):
         self.destroy_subscription(gripper_subscription)
 
     def _gripper_command_callback(self, msg: Float32) -> None:
-        new_open_width_percent = msg.data
+        new_open_width_percent = min(
+            max(msg.data, self._MIN_GRIPPER_WIDTH_PERCENT), self._MAX_GRIPPER_WIDTH_PERCENT
+        )
         new_open_width = self._max_width * new_open_width_percent
-        if self._gripper_command_transmitted and new_open_width != self._last_gripper_command:
-            self._send_gripper_command(new_open_width)
-            self._last_gripper_command = new_open_width
-            self._gripper_command_transmitted = False
+
+        if abs(new_open_width - self._last_gripper_command) <= self._COMMAND_EPSILON:
+            return
+
+        self._send_gripper_command(new_open_width)
+        self._last_gripper_command = new_open_width
 
     def _send_gripper_command(self, gripper_position: float) -> None:
+        if self._active_goal_handle is not None:
+            self._active_goal_handle.cancel_goal_async()
+
         goal_msg = Move.Goal()
         goal_msg.width = gripper_position
         goal_msg.speed = 1.0
@@ -129,15 +138,17 @@ class GripperClient(Node):
         goal_handle = future.result()
 
         if not goal_handle.accepted:
-            raise RuntimeError(f"Goal rejected with status: {goal_handle.status}")
+            self.get_logger().warning(f"Goal rejected with status: {goal_handle.status}")
+            return
 
+        self._active_goal_handle = goal_handle
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self._get_result_callback)
 
     def _get_result_callback(self, future: rclpy.task.Future) -> None:
         result = future.result().result
         self.get_logger().info("Result: {0}".format(result))
-        self._gripper_command_transmitted = True
+        self._active_goal_handle = None
 
 
 def main(args=None):
