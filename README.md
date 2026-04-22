@@ -246,7 +246,7 @@ python experiments/launch_nodes.py --robot <sim_ur|sim_panda|sim_xarm>
 python experiments/launch_nodes.py --robot <ur|panda|xarm>
 ```
 
-> **Panda note:** By default, the Panda node now keeps the robot at its current pose on startup (no automatic `go_home`) to avoid an initial pose jump when syncing with GELLO. If you explicitly want homing on startup, launch with `--panda-move-home True`.  
+> **Panda note:** By default, the Panda node moves to its home pose on startup (`go_home`). If you want to keep the current pose instead, launch with `--panda-move-home False`.  
 > A visible startup gripper open/close cycle is also disabled by default to avoid startup jerks. You can re-enable it with `--panda-gripper-startup-cycle True`.
 
 **2. Launch GELLO controller:**

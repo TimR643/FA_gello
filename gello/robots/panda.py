@@ -22,7 +22,7 @@ class PandaRobot(Robot):
     def __init__(
         self,
         robot_ip: str = "100.97.47.74",
-        move_home: bool = False,
+        move_home: bool = True,
         run_gripper_startup_cycle: bool = False,
     ):
         from polymetis import GripperInterface, RobotInterface

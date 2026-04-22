@@ -13,7 +13,7 @@ class Args:
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.10"
-    panda_move_home: bool = False
+    panda_move_home: bool = True
     panda_gripper_startup_cycle: bool = False
 
 
