@@ -63,6 +63,7 @@ class PandaRobot(Robot):
         self._gripper_synced = False
         self._leader_gripper_ref = 0.0
         self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
+        self._leader_open_is_high = False
         self._full_close_latched = False
         self._gripper_toggle_closed = False
         time.sleep(1)
@@ -104,24 +105,34 @@ class PandaRobot(Robot):
             self._last_gripper_width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
             self._leader_gripper_ref = gripper_cmd
             self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
-            self._full_close_latched = gripper_cmd >= GRIPPER_FULL_CLOSE_THRESHOLD
+            # Auto-detect if leader reports "open" near 1.0 or near 0.0.
+            follower_is_open = self._follower_gripper_ref >= 0.5
+            if follower_is_open:
+                self._leader_open_is_high = gripper_cmd >= 0.5
+            else:
+                self._leader_open_is_high = gripper_cmd < 0.5
+
+            close_metric = 1.0 - gripper_cmd if self._leader_open_is_high else gripper_cmd
+            self._full_close_latched = close_metric >= GRIPPER_FULL_CLOSE_THRESHOLD
             self._gripper_synced = True
             return
+
+        close_metric = 1.0 - gripper_cmd if self._leader_open_is_high else gripper_cmd
 
         # Gripper toggle gesture:
         # fully close once -> close follower gripper
         # fully close again (after releasing) -> open follower gripper
-        if gripper_cmd <= GRIPPER_FORCE_OPEN_THRESHOLD:
+        if close_metric <= GRIPPER_FORCE_OPEN_THRESHOLD:
             self._gripper_toggle_closed = False
             self._full_close_latched = False
 
         if (
-            gripper_cmd >= GRIPPER_FULL_CLOSE_THRESHOLD
+            close_metric >= GRIPPER_FULL_CLOSE_THRESHOLD
             and not self._full_close_latched
         ):
             self._full_close_latched = True
             self._gripper_toggle_closed = not self._gripper_toggle_closed
-        elif gripper_cmd <= GRIPPER_FULL_CLOSE_RELEASE:
+        elif close_metric <= GRIPPER_FULL_CLOSE_RELEASE:
             self._full_close_latched = False
 
         mapped_gripper_cmd = 1.0 if self._gripper_toggle_closed else 0.0
