@@ -248,7 +248,7 @@ python experiments/launch_nodes.py --robot <ur|panda|xarm>
 
 > **Panda note:** By default, the Panda node moves to its home pose on startup (`go_home`). If you want to keep the current pose instead, launch with `--panda-move-home False`.  
 > A visible startup gripper open/close cycle is also disabled by default to avoid startup jerks. You can re-enable it with `--panda-gripper-startup-cycle True`.
-> For teleoperation, the Panda gripper uses a close-gesture toggle: fully close the GELLO gripper once to close, release, then fully close again to open.
+> For teleoperation, the Panda gripper uses a close-gesture toggle: fully close the GELLO gripper once to close, release, then fully close again to open. Fully opening the GELLO gripper will also force the real gripper to open.
 
 **2. Launch GELLO controller:**
 ```bash

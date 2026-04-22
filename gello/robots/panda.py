@@ -15,7 +15,8 @@ GRIPPER_INIT_FORCE = 120
 GRIPPER_INIT_SETTLE_S = 0.15
 GRIPPER_INIT_CLOSE_RATIO = 0.35
 GRIPPER_FULL_CLOSE_THRESHOLD = 0.95
-GRIPPER_FULL_CLOSE_RELEASE = 0.70
+GRIPPER_FULL_CLOSE_RELEASE = 0.85
+GRIPPER_FORCE_OPEN_THRESHOLD = 0.10
 
 
 class PandaRobot(Robot):
@@ -110,6 +111,10 @@ class PandaRobot(Robot):
         # Gripper toggle gesture:
         # fully close once -> close follower gripper
         # fully close again (after releasing) -> open follower gripper
+        if gripper_cmd <= GRIPPER_FORCE_OPEN_THRESHOLD:
+            self._gripper_toggle_closed = False
+            self._full_close_latched = False
+
         if (
             gripper_cmd >= GRIPPER_FULL_CLOSE_THRESHOLD
             and not self._full_close_latched
