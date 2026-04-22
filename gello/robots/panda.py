@@ -10,13 +10,20 @@ GRIPPER_CMD_EPS = 0.01
 GRIPPER_SPEED = 255
 GRIPPER_FORCE = 255
 GRIPPER_MAX_STEP = 0.015
-GRIPPER_STARTUP_IGNORE_STEPS = 10
+GRIPPER_INIT_SPEED = 180
+GRIPPER_INIT_FORCE = 120
+GRIPPER_INIT_SETTLE_S = 0.15
 
 
 class PandaRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "100.97.47.74", move_home: bool = False):
+    def __init__(
+        self,
+        robot_ip: str = "100.97.47.74",
+        move_home: bool = False,
+        run_gripper_startup_cycle: bool = True,
+    ):
         from polymetis import GripperInterface, RobotInterface
 
         self.robot = RobotInterface(
@@ -29,11 +36,27 @@ class PandaRobot(Robot):
         if move_home:
             self.robot.go_home()
         self.robot.start_joint_impedance()
-        self.gripper.goto(width=MAX_OPEN, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
-        self._last_gripper_width = float(
-            np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN)
-        )
-        self._gripper_startup_steps = 0
+        if run_gripper_startup_cycle:
+            # Keep the previous behavior where the gripper visibly opens/closes
+            # once during startup, which also helps wake up the gripper state.
+            self.gripper.goto(
+                width=MAX_OPEN, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+            )
+            time.sleep(GRIPPER_INIT_SETTLE_S)
+            self.gripper.goto(
+                width=0.0, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+            )
+            time.sleep(GRIPPER_INIT_SETTLE_S)
+            self.gripper.goto(
+                width=MAX_OPEN, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+            )
+        else:
+            self.gripper.goto(width=MAX_OPEN, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
+
+        self._last_gripper_width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
+        self._gripper_synced = False
+        self._leader_gripper_ref = 0.0
+        self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
         time.sleep(1)
 
     def num_dofs(self) -> int:
@@ -66,16 +89,21 @@ class PandaRobot(Robot):
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
 
         gripper_cmd = float(np.clip(joint_state[-1], 0.0, 1.0))
-        target_width = MAX_OPEN * (1 - gripper_cmd)
 
-        # Ignore the first few gripper commands to avoid startup transients from
-        # the leader/follower synchronization phase.
-        if self._gripper_startup_steps < GRIPPER_STARTUP_IGNORE_STEPS:
-            self._gripper_startup_steps += 1
-            self._last_gripper_width = float(
-                np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN)
-            )
+        # Sync first command to current follower gripper state to avoid
+        # startup transients that can cause a sudden close jerk.
+        if not self._gripper_synced:
+            self._last_gripper_width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
+            self._leader_gripper_ref = gripper_cmd
+            self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
+            self._gripper_synced = True
             return
+
+        mapped_gripper_cmd = self._follower_gripper_ref + (
+            gripper_cmd - self._leader_gripper_ref
+        )
+        mapped_gripper_cmd = float(np.clip(mapped_gripper_cmd, 0.0, 1.0))
+        target_width = MAX_OPEN * (1 - mapped_gripper_cmd)
 
         # Rate limit gripper motions to avoid sudden rucks on startup.
         width_delta = target_width - self._last_gripper_width

@@ -268,6 +268,11 @@ Use `--start-joints` to specify GELLO's starting configuration for automatic rob
 python experiments/run_env.py --agent=gello --start-joints <joint_angles>
 ```
 
+By default, `run_env.py` no longer auto-resets to a hardcoded joint pose at startup (to avoid unwanted startup jumps on some setups such as Panda). To explicitly enable the old auto-reset behavior, pass:
+```bash
+python experiments/run_env.py --agent=gello --auto-reset True
+```
+
 ## Advanced Features
 
 ### Data Collection
