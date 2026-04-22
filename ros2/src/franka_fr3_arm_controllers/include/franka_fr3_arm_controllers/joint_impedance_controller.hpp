@@ -52,6 +52,9 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   Vector7d k_gains_;
   Vector7d d_gains_;
   double k_alpha_;
+  bool align_to_current_robot_pose_{true};
+  bool gello_alignment_initialized_{false};
+  Vector7d gello_to_robot_offset_{Vector7d::Zero()};
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
   rclcpp::Time start_time_;

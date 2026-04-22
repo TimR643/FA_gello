@@ -6,12 +6,28 @@ import numpy as np
 from gello.robots.robot import Robot
 
 MAX_OPEN = 0.09
+GRIPPER_CMD_EPS = 0.01
+GRIPPER_SPEED = 255
+GRIPPER_FORCE = 255
+GRIPPER_MAX_STEP = 0.015
+GRIPPER_INIT_SPEED = 180
+GRIPPER_INIT_FORCE = 120
+GRIPPER_INIT_SETTLE_S = 0.15
+GRIPPER_INIT_CLOSE_RATIO = 0.35
+GRIPPER_FULL_CLOSE_THRESHOLD = 0.95
+GRIPPER_FULL_CLOSE_RELEASE = 0.85
+GRIPPER_FORCE_OPEN_THRESHOLD = 0.10
 
 
 class PandaRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "100.97.47.74"):
+    def __init__(
+        self,
+        robot_ip: str = "100.97.47.74",
+        move_home: bool = True,
+        run_gripper_startup_cycle: bool = False,
+    ):
         from polymetis import GripperInterface, RobotInterface
 
         self.robot = RobotInterface(
@@ -20,9 +36,36 @@ class PandaRobot(Robot):
         self.gripper = GripperInterface(
             ip_address="localhost",
         )
-        self.robot.go_home()
+
+        if move_home:
+            self.robot.go_home()
         self.robot.start_joint_impedance()
-        self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
+        if run_gripper_startup_cycle:
+            # Keep the previous behavior where the gripper visibly opens/closes
+            # once during startup, which also helps wake up the gripper state.
+            self.gripper.goto(
+                width=MAX_OPEN, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+            )
+            time.sleep(GRIPPER_INIT_SETTLE_S)
+            self.gripper.goto(
+                width=MAX_OPEN * GRIPPER_INIT_CLOSE_RATIO,
+                speed=GRIPPER_INIT_SPEED,
+                force=GRIPPER_INIT_FORCE,
+            )
+            time.sleep(GRIPPER_INIT_SETTLE_S)
+            self.gripper.goto(
+                width=MAX_OPEN, speed=GRIPPER_INIT_SPEED, force=GRIPPER_INIT_FORCE
+            )
+        else:
+            self.gripper.goto(width=MAX_OPEN, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
+
+        self._last_gripper_width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
+        self._gripper_synced = False
+        self._leader_gripper_ref = 0.0
+        self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
+        self._leader_open_is_high = False
+        self._full_close_latched = False
+        self._gripper_toggle_closed = False
         time.sleep(1)
 
     def num_dofs(self) -> int:
@@ -53,7 +96,60 @@ class PandaRobot(Robot):
         import torch
 
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
-        self.gripper.goto(width=(MAX_OPEN * (1 - joint_state[-1])), speed=1, force=1)
+
+        gripper_cmd = float(np.clip(joint_state[-1], 0.0, 1.0))
+
+        # Sync first command to current follower gripper state to avoid
+        # startup transients that can cause a sudden close jerk.
+        if not self._gripper_synced:
+            self._last_gripper_width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
+            self._leader_gripper_ref = gripper_cmd
+            self._follower_gripper_ref = self._last_gripper_width / MAX_OPEN
+            # Auto-detect if leader reports "open" near 1.0 or near 0.0.
+            follower_is_open = self._follower_gripper_ref >= 0.5
+            if follower_is_open:
+                self._leader_open_is_high = gripper_cmd >= 0.5
+            else:
+                self._leader_open_is_high = gripper_cmd < 0.5
+
+            close_metric = 1.0 - gripper_cmd if self._leader_open_is_high else gripper_cmd
+            self._full_close_latched = close_metric >= GRIPPER_FULL_CLOSE_THRESHOLD
+            self._gripper_synced = True
+            return
+
+        close_metric = 1.0 - gripper_cmd if self._leader_open_is_high else gripper_cmd
+
+        # Gripper toggle gesture:
+        # fully close once -> close follower gripper
+        # fully close again (after releasing) -> open follower gripper
+        if close_metric <= GRIPPER_FORCE_OPEN_THRESHOLD:
+            self._gripper_toggle_closed = False
+            self._full_close_latched = False
+
+        if (
+            close_metric >= GRIPPER_FULL_CLOSE_THRESHOLD
+            and not self._full_close_latched
+        ):
+            self._full_close_latched = True
+            self._gripper_toggle_closed = not self._gripper_toggle_closed
+        elif close_metric <= GRIPPER_FULL_CLOSE_RELEASE:
+            self._full_close_latched = False
+
+        mapped_gripper_cmd = 1.0 if self._gripper_toggle_closed else 0.0
+        target_width = MAX_OPEN * (1 - mapped_gripper_cmd)
+
+        # Rate limit gripper motions to avoid sudden rucks on startup.
+        width_delta = target_width - self._last_gripper_width
+        width_delta = float(np.clip(width_delta, -GRIPPER_MAX_STEP, GRIPPER_MAX_STEP))
+        limited_target_width = float(
+            np.clip(self._last_gripper_width + width_delta, 0.0, MAX_OPEN)
+        )
+
+        if abs(limited_target_width - self._last_gripper_width) > GRIPPER_CMD_EPS:
+            self.gripper.goto(
+                width=limited_target_width, speed=GRIPPER_SPEED, force=GRIPPER_FORCE
+            )
+            self._last_gripper_width = limited_target_width
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()

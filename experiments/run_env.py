@@ -37,6 +37,7 @@ class Args:
     data_dir: str = "~/bc_data"
     bimanual: bool = False
     verbose: bool = False
+    auto_reset: bool = False
 
     def __post_init__(self):
         if self.start_joints is not None:
@@ -138,15 +139,17 @@ def main(args):
                 "port": gello_port,
                 "start_joints": args.start_joints,
             }
-            if args.start_joints is None:
+            if args.start_joints is None and args.auto_reset:
                 reset_joints = np.deg2rad(
                     [0, -90, 90, -90, -90, 0, 0]
                 )  # Change this to your own reset joints
-            else:
+            elif args.start_joints is not None:
                 reset_joints = np.array(args.start_joints)
+            else:
+                reset_joints = None
 
             curr_joints = env.get_obs()["joint_positions"]
-            if reset_joints.shape == curr_joints.shape:
+            if reset_joints is not None and reset_joints.shape == curr_joints.shape:
                 max_delta = (np.abs(curr_joints - reset_joints)).max()
                 steps = min(int(max_delta / 0.01), 100)
 
