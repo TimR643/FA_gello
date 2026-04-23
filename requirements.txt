@@ -2,7 +2,7 @@
 dm_control
 omegaconf==2.3.0
 Pillow
-pin==3.7.0
+pin==3.8.0
 pygame
 pyspacemouse
 PyQt6
@@ -19,3 +19,4 @@ xarm
 xarm-python-sdk
 numpy-quaternion
 termcolor
+cmeel-assimp>=5.4.3,<6
