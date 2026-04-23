@@ -246,6 +246,11 @@ python experiments/launch_nodes.py --robot <sim_ur|sim_panda|sim_xarm>
 python experiments/launch_nodes.py --robot <ur|panda|xarm>
 ```
 
+> **Panda note:** By default, the Panda node moves to its home pose on startup (`go_home`). If you want to keep the current pose instead, launch with `--panda-move-home False`.  
+> A visible startup gripper open/close cycle is also disabled by default to avoid startup jerks. You can re-enable it with `--panda-gripper-startup-cycle True`.
+> For teleoperation, the Panda gripper uses a button-like toggle gesture: press the GELLO gripper once to close, release, then press again to open.
+> The default Panda gripper teleop settings intentionally avoid full-force full-close to reduce the chance of clamping an object so hard that release becomes unreliable.
+
 **2. Launch GELLO controller:**
 ```bash
 python experiments/run_env.py --agent=gello
@@ -264,6 +269,11 @@ If some joints in your arm are not behaving as expected, you may need to modify 
 Use `--start-joints` to specify GELLO's starting configuration for automatic robot reset:
 ```bash
 python experiments/run_env.py --agent=gello --start-joints <joint_angles>
+```
+
+By default, `run_env.py` no longer auto-resets to a hardcoded joint pose at startup (to avoid unwanted startup jumps on some setups such as Panda). To explicitly enable the old auto-reset behavior, pass:
+```bash
+python experiments/run_env.py --agent=gello --auto-reset True
 ```
 
 ## Advanced Features
