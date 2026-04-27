@@ -84,6 +84,19 @@ class GelloHardware:
         ]
     )
     MID_JOINT_POSITIONS = JOINT_POSITION_LIMITS.mean(axis=1)
+    JOINT_VELOCITY_LIMITS = np.array(
+        [
+            2.62,  # rad/s
+            2.62,
+            2.62,
+            2.62,
+            5.26,
+            4.18,
+            5.26,
+        ]
+    )
+    TELEOP_MAX_JOINT_VELOCITY = 2.2  # Conservative cap to stay below controller safety limits
+    TELEOP_VELOCITY_SAFETY_FACTOR = 0.85
 
     OPERATING_MODE = 5  # CURRENT_BASED_POSITION_MODE
     CURRENT_LIMIT = 600  # mA
@@ -163,6 +176,7 @@ class GelloHardware:
         self._prev_arm_joints_raw = self._initial_arm_joints_raw.copy()
         # Store processed initial joint positions for updating the processed position with the deltas
         self._prev_arm_joints = initial_arm_joints.copy()
+        self._prev_update_time = time.monotonic()
 
         self._dynamixel_control_config = DynamixelControlConfig(
             kp_p=hardware_config["dynamixel_kp_p"].copy(),
@@ -234,7 +248,17 @@ class GelloHardware:
         to the robot's joint limits.
         """
         # Compute joint position deltas and apply to previous processed positions
+        current_time = time.monotonic()
+        dt = max(current_time - self._prev_update_time, 1e-3)
+        self._prev_update_time = current_time
+
         arm_joints_delta = (arm_joints_raw - self._prev_arm_joints_raw) * self._joint_signs
+        joint_velocity_caps = np.minimum(
+            self.JOINT_VELOCITY_LIMITS[: self._num_arm_joints], self.TELEOP_MAX_JOINT_VELOCITY
+        )
+        max_joint_delta = joint_velocity_caps * dt
+        max_joint_delta *= self.TELEOP_VELOCITY_SAFETY_FACTOR
+        arm_joints_delta = np.clip(arm_joints_delta, -max_joint_delta, max_joint_delta)
         arm_joints = self._prev_arm_joints + arm_joints_delta
 
         # Store for next update

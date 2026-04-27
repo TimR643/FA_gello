@@ -3,11 +3,13 @@ import time
 from rclpy.node import Node
 from franka_msgs.action import Move
 from franka_msgs.action import Homing
+from franka_msgs.action import Grasp
 from sensor_msgs.msg import JointState
 from rclpy.action import ActionClient
 from std_msgs.msg import Float32
 
 DEFAULT_MOVE_ACTION_TOPIC = "franka_gripper/move"
+DEFAULT_GRASP_ACTION_TOPIC = "franka_gripper/grasp"
 DEFAULT_HOMING_ACTION_TOPIC = "franka_gripper/homing"
 DEFAULT_JOINT_STATES_TOPIC = "franka_gripper/joint_states"
 DEFAULT_GRIPPER_COMMAND_TOPIC = "gripper/gripper_client/target_gripper_width_percent"
@@ -18,12 +20,16 @@ class GripperClient(Node):
         super().__init__("gripper_client")
 
         self.declare_parameter("move_action_topic", DEFAULT_MOVE_ACTION_TOPIC)
+        self.declare_parameter("grasp_action_topic", DEFAULT_GRASP_ACTION_TOPIC)
         self.declare_parameter("homing_action_topic", DEFAULT_HOMING_ACTION_TOPIC)
         self.declare_parameter("gripper_command_topic", DEFAULT_GRIPPER_COMMAND_TOPIC)
         self.declare_parameter("joint_states_topic", DEFAULT_JOINT_STATES_TOPIC)
 
         move_action_topic = (
             self.get_parameter("move_action_topic").get_parameter_value().string_value
+        )
+        grasp_action_topic = (
+            self.get_parameter("grasp_action_topic").get_parameter_value().string_value
         )
         homing_action_topic = (
             self.get_parameter("homing_action_topic").get_parameter_value().string_value
@@ -38,9 +44,15 @@ class GripperClient(Node):
         self._ACTION_SERVER_TIMEOUT = 10.0
         self._MIN_GRIPPER_WIDTH_PERCENT = 0.0
         self._MAX_GRIPPER_WIDTH_PERCENT = 1.0
+        self._PRESS_THRESHOLD = 0.2
+        self._RELEASE_THRESHOLD = 0.6
+        self._DEFAULT_GRASP_FORCE = 20.0
+        self._DEFAULT_GRASP_SPEED = 1.0
+        self._DEFAULT_GRASP_EPSILON = 0.005
         self._gripper_command_transmitted = True
+        self._press_active = False
+        self._gripper_closed = False
         self._max_width = 0.0
-        self._last_gripper_command = self._max_width * self._MAX_GRIPPER_WIDTH_PERCENT
 
         self.get_logger().info("Initializing gripper client...")
         self._home_gripper(homing_action_topic)
@@ -50,12 +62,18 @@ class GripperClient(Node):
         self._gripper_command_subscription = self.create_subscription(
             Float32, gripper_command_topic, self._gripper_command_callback, 10
         )
-        self._action_client = ActionClient(self, Move, move_action_topic)
+        self._move_action_client = ActionClient(self, Move, move_action_topic)
+        self._grasp_action_client = ActionClient(self, Grasp, grasp_action_topic)
 
         self.get_logger().info("Waiting for gripper move action server...")
-        if not self._action_client.wait_for_server(timeout_sec=self._ACTION_SERVER_TIMEOUT):
+        if not self._move_action_client.wait_for_server(timeout_sec=self._ACTION_SERVER_TIMEOUT):
             raise RuntimeError(
                 f"Move action server not available after {self._ACTION_SERVER_TIMEOUT} seconds!"
+            )
+        self.get_logger().info("Waiting for gripper grasp action server...")
+        if not self._grasp_action_client.wait_for_server(timeout_sec=self._ACTION_SERVER_TIMEOUT):
+            raise RuntimeError(
+                f"Grasp action server not available after {self._ACTION_SERVER_TIMEOUT} seconds!"
             )
 
         self.get_logger().info("Gripper client initialized!")
@@ -111,18 +129,48 @@ class GripperClient(Node):
         self.destroy_subscription(gripper_subscription)
 
     def _gripper_command_callback(self, msg: Float32) -> None:
-        new_open_width_percent = msg.data
-        new_open_width = self._max_width * new_open_width_percent
-        if self._gripper_command_transmitted and new_open_width != self._last_gripper_command:
-            self._send_gripper_command(new_open_width)
-            self._last_gripper_command = new_open_width
-            self._gripper_command_transmitted = False
+        open_width_percent = max(
+            self._MIN_GRIPPER_WIDTH_PERCENT, min(self._MAX_GRIPPER_WIDTH_PERCENT, msg.data)
+        )
 
-    def _send_gripper_command(self, gripper_position: float) -> None:
+        # Toggle behavior:
+        # - First press closes with Grasp
+        # - Second press opens with Move
+        # A press is registered on threshold crossing with hysteresis.
+        if not self._press_active and open_width_percent <= self._PRESS_THRESHOLD:
+            self._press_active = True
+            self._toggle_gripper()
+        elif self._press_active and open_width_percent >= self._RELEASE_THRESHOLD:
+            self._press_active = False
+
+    def _toggle_gripper(self) -> None:
+        if not self._gripper_command_transmitted:
+            self.get_logger().warning("Ignoring toggle while previous gripper command is active.")
+            return
+
+        self._gripper_command_transmitted = False
+        if self._gripper_closed:
+            self._send_move_command(self._max_width)
+            self._gripper_closed = False
+        else:
+            self._send_grasp_command(0.0)
+            self._gripper_closed = True
+
+    def _send_move_command(self, gripper_position: float) -> None:
         goal_msg = Move.Goal()
         goal_msg.width = gripper_position
-        goal_msg.speed = 1.0
-        self._future = self._action_client.send_goal_async(goal_msg)
+        goal_msg.speed = self._DEFAULT_GRASP_SPEED
+        self._future = self._move_action_client.send_goal_async(goal_msg)
+        self._future.add_done_callback(self._gripper_response_callback)
+
+    def _send_grasp_command(self, gripper_position: float) -> None:
+        goal_msg = Grasp.Goal()
+        goal_msg.width = gripper_position
+        goal_msg.speed = self._DEFAULT_GRASP_SPEED
+        goal_msg.force = self._DEFAULT_GRASP_FORCE
+        goal_msg.epsilon.inner = self._DEFAULT_GRASP_EPSILON
+        goal_msg.epsilon.outer = self._DEFAULT_GRASP_EPSILON
+        self._future = self._grasp_action_client.send_goal_async(goal_msg)
         self._future.add_done_callback(self._gripper_response_callback)
 
     def _gripper_response_callback(self, future: rclpy.task.Future) -> None:
