@@ -16,7 +16,7 @@
   joint_impedance_controller:
     ros__parameters:
       k_alpha: 0.99
-      max_goal_joint_velocity: 1.2
+      max_goal_joint_velocity: 0.6
       k_gains:
         - 240.0
         - 240.0
@@ -24,7 +24,7 @@
         - 240.0
         - 100.0
         - 60.0
-        - 20.0
+        - 12.0
       d_gains:
         - 20.0
         - 20.0
