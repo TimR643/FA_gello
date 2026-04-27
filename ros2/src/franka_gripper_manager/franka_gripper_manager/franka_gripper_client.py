@@ -45,13 +45,13 @@ class GripperClient(Node):
         self._MIN_GRIPPER_WIDTH_PERCENT = 0.0
         self._MAX_GRIPPER_WIDTH_PERCENT = 1.0
         self._PRESS_THRESHOLD = 0.2
-        self._RELEASE_THRESHOLD = 0.6
+        self._TOGGLE_DEBOUNCE_SEC = 0.35
         self._DEFAULT_GRASP_FORCE = 20.0
         self._DEFAULT_GRASP_SPEED = 1.0
         self._DEFAULT_GRASP_EPSILON = 0.005
         self._gripper_command_transmitted = True
-        self._press_active = False
         self._gripper_closed = False
+        self._last_toggle_time = 0.0
         self._max_width = 0.0
 
         self.get_logger().info("Initializing gripper client...")
@@ -136,12 +136,14 @@ class GripperClient(Node):
         # Toggle behavior:
         # - First press closes with Grasp
         # - Second press opens with Move
-        # A press is registered on threshold crossing with hysteresis.
-        if not self._press_active and open_width_percent <= self._PRESS_THRESHOLD:
-            self._press_active = True
+        # A press is registered if the trigger is below threshold and debounce time has elapsed.
+        now = time.monotonic()
+        if (
+            open_width_percent <= self._PRESS_THRESHOLD
+            and (now - self._last_toggle_time) >= self._TOGGLE_DEBOUNCE_SEC
+        ):
+            self._last_toggle_time = now
             self._toggle_gripper()
-        elif self._press_active and open_width_percent >= self._RELEASE_THRESHOLD:
-            self._press_active = False
 
     def _toggle_gripper(self) -> None:
         if not self._gripper_command_transmitted:
@@ -177,15 +179,18 @@ class GripperClient(Node):
         goal_handle = future.result()
 
         if not goal_handle.accepted:
+            self._gripper_command_transmitted = True
             raise RuntimeError(f"Goal rejected with status: {goal_handle.status}")
 
+        # Allow the next toggle as soon as the goal is accepted.
+        # Waiting for the final result can block opening after a successful grasp.
+        self._gripper_command_transmitted = True
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self._get_result_callback)
 
     def _get_result_callback(self, future: rclpy.task.Future) -> None:
         result = future.result().result
         self.get_logger().info("Result: {0}".format(result))
-        self._gripper_command_transmitted = True
 
 
 def main(args=None):
