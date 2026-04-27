@@ -26,6 +26,7 @@ setup(
         "console_scripts": [
             "franka_gripper_client = franka_gripper_manager.franka_gripper_client:main",
             "robotiq_gripper_client = franka_gripper_manager.robotiq_gripper_client:main",
+            "open_gripper_keyboard = franka_gripper_manager.open_gripper_keyboard:main",
         ],
     },
 )
