@@ -13,6 +13,7 @@ class GelloHardwareParams(TypedDict):
     num_arm_joints: int
     joint_signs: List[int]
     gripper: bool
+    invert_gripper_direction: bool
     gripper_range_rad: List[float]
     assembly_offsets: List[float]
     dynamixel_kp_p: List[int]
@@ -156,6 +157,7 @@ class GelloHardware:
         self._num_arm_joints = hardware_config["num_arm_joints"]
         self._joint_signs = np.array(hardware_config["joint_signs"])
         self._gripper = hardware_config["gripper"]
+        self._invert_gripper_direction = hardware_config["invert_gripper_direction"]
         self._num_total_joints = self._num_arm_joints + (1 if self._gripper else 0)
         self._gripper_range_rad = hardware_config["gripper_range_rad"]
         self._assembly_offsets = np.array(hardware_config["assembly_offsets"])
@@ -278,6 +280,8 @@ class GelloHardware:
             self._gripper_range_rad[1] - self._gripper_range_rad[0]
         )
         gripper_position_clipped = max(0.0, min(1.0, gripper_position_percent))
+        if self._invert_gripper_direction:
+            return 1.0 - gripper_position_clipped
         return gripper_position_clipped
 
     def disable_torque(self) -> None:
