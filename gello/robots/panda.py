@@ -5,6 +5,8 @@ import numpy as np
 
 from gello.robots.robot import Robot
 
+import polymetis
+
 MAX_OPEN = 0.09
 
 
@@ -25,6 +27,12 @@ class PandaRobot(Robot):
         self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
         time.sleep(1)
 
+        self.robot = polymetis.RobotInterface(ip_address=robot_ip)
+        self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
+
+        self.last_target_width = 0.08
+
+
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
 
@@ -44,6 +52,7 @@ class PandaRobot(Robot):
         pos = np.append(robot_joints, gripper_pos.width / MAX_OPEN)
         return pos
 
+
     def command_joint_state(self, joint_state: np.ndarray) -> None:
         """Command the leader robot to a given state.
 
@@ -54,6 +63,7 @@ class PandaRobot(Robot):
 
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
         self.gripper.goto(width=(MAX_OPEN * (1 - joint_state[-1])), speed=1, force=1)
+        
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
