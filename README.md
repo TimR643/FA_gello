@@ -309,6 +309,14 @@ Both robot state and camera streams are captured in the same demo episodes, so c
 
 If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
 
+
+**Alternative without extra camera server (recommended if detection via ZMQ launcher is flaky):**
+```bash
+python experiments/run_env.py   --agent=gello   --use-save-interface   --use-direct-realsense
+```
+This opens the first detected RealSense/FRAMOS camera directly in `run_env.py` and records it as `wrist` camera data.
+You can optionally pin a serial with `--wrist-camera-id <serial>`.
+
 If you get `Camera server timeout at tcp://127.0.0.1:5000`, run a quick camera-only check in a second terminal:
 ```bash
 python experiments/launch_camera_nodes.py --hostname 127.0.0.1

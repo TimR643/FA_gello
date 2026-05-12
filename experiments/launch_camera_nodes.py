@@ -25,7 +25,7 @@ def launch_server(port: int, camera_id: str, args: Args):
 
 
 def main(args):
-    ids = get_device_ids()
+    ids = get_device_ids(reset_devices=False)
     if len(ids) == 0:
         raise RuntimeError("No RealSense/FRAMOS cameras detected. Check USB/power and rsviewer setup.")
 
