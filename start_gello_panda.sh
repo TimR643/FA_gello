@@ -49,7 +49,7 @@ tmux send-keys -t $SESSION:4 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:4 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:4 "cd ~/gello_software" C-m
 tmux send-keys -t $SESSION:4 "echo 'Run with camera recording:'" C-m
-tmux send-keys -t $SESSION:4 "echo 'python experiments/run_env.py --agent=gello --use-save-interface --use-wrist-camera --use-base-camera --wrist-camera-port 5000 --base-camera-port 5001'" C-m
+tmux send-keys -t $SESSION:4 "echo 'python experiments/run_env.py --agent=gello --use-save-interface --use-wrist-camera --wrist-camera-port 5000'" C-m
 
 tmux select-window -t $SESSION:4
 tmux attach-session -t $SESSION

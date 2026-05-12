@@ -298,13 +298,13 @@ python experiments/run_env.py \
   --agent=gello \
   --use-save-interface \
   --use-wrist-camera \
-  --use-base-camera \
   --wrist-camera-port 5000 \
-  --base-camera-port 5001 \
   --hostname 127.0.0.1
 ```
 
 Both robot state and camera streams are captured in the same demo episodes, so camera recording starts/stops together with the GELLO recording session.
+
+If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
 
 3. Convert to training format:
 ```bash
@@ -318,9 +318,7 @@ python gello/data_utils/demo_to_gdict.py --source-dir=<source_dir>
 >   --agent=gello \
 >   --use-save-interface \
 >   --use-wrist-camera \
->   --use-base-camera \
->   --wrist-camera-port 5000 \
->   --base-camera-port 5001
+>   --wrist-camera-port 5000
 > ```
 > Then press `s` to start and `q` to stop: robot + camera are saved in the same `.pkl` frames.
 > For LeRobot conversion in this repo, use:

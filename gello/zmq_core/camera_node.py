@@ -17,6 +17,10 @@ class ZMQClientCamera(CameraDriver):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{host}:{port}")
+        self._socket.setsockopt(zmq.RCVTIMEO, 2000)
+        self._socket.setsockopt(zmq.SNDTIMEO, 2000)
+        self._host = host
+        self._port = port
 
     def read(
         self,
@@ -29,8 +33,14 @@ class ZMQClientCamera(CameraDriver):
         """
         # pack the image_size and send it to the server
         send_message = pickle.dumps(img_size)
-        self._socket.send(send_message)
-        state_dict = pickle.loads(self._socket.recv())
+        try:
+            self._socket.send(send_message)
+            state_dict = pickle.loads(self._socket.recv())
+        except zmq.error.Again as exc:
+            raise RuntimeError(
+                f"Camera server timeout at tcp://{self._host}:{self._port}. "
+                "Check launch_camera_nodes.py and selected camera ports."
+            ) from exc
         return state_dict
 
 
