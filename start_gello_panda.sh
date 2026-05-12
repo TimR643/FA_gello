@@ -39,6 +39,10 @@ tmux new-window -t $SESSION:3 -n "cameras"
 tmux send-keys -t $SESSION:3 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:3 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:3 "cd ~/gello_software" C-m
+tmux send-keys -t $SESSION:3 "pkill -f rsviewer || true" C-m
+tmux send-keys -t $SESSION:3 "echo Starting Intel RealSense with rsviewer" C-m
+tmux send-keys -t $SESSION:3 "rsviewer >/tmp/rsviewer_gello.log 2>&1 &" C-m
+tmux send-keys -t $SESSION:3 "sleep 3" C-m
 tmux send-keys -t $SESSION:3 "python experiments/launch_camera_nodes.py --hostname 127.0.0.1" C-m
 
 sleep 2
