@@ -291,6 +291,7 @@ python experiments/run_env.py --agent=gello --use-save-interface
 rsviewer
 # wait a few seconds, then close rsviewer
 python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+# keep this terminal open; stop with Ctrl+C
 ```
 This script assigns ports starting at `5000` in detection order (`5000`, `5001`, ...).
 
@@ -311,6 +312,7 @@ If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
 If you get `Camera server timeout at tcp://127.0.0.1:5000`, run a quick camera-only check in a second terminal:
 ```bash
 python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+# keep this terminal open; stop with Ctrl+C
 # in another terminal:
 python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000
 # optional GUI preview (requires Qt/OpenCV GUI):
