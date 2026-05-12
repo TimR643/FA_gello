@@ -313,8 +313,10 @@ If you get `Camera server timeout at tcp://127.0.0.1:5000`, run a quick camera-o
 python experiments/launch_camera_nodes.py --hostname 127.0.0.1
 # in another terminal:
 python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000
+# optional GUI preview (requires Qt/OpenCV GUI):
+python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000 --visualize True
 ```
-If `launch_camera_clients.py` shows images, camera transport is OK and you can start `run_env.py`.
+If the headless client prints frame shapes (`rgb=... depth=...`), camera transport is OK and you can start `run_env.py`.
 
 3. Convert to training format:
 ```bash
