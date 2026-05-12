@@ -308,6 +308,14 @@ Both robot state and camera streams are captured in the same demo episodes, so c
 
 If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
 
+If you get `Camera server timeout at tcp://127.0.0.1:5000`, run a quick camera-only check in a second terminal:
+```bash
+python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+# in another terminal:
+python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000
+```
+If `launch_camera_clients.py` shows images, camera transport is OK and you can start `run_env.py`.
+
 3. Convert to training format:
 ```bash
 python gello/data_utils/demo_to_gdict.py --source-dir=<source_dir>

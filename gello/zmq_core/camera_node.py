@@ -17,8 +17,8 @@ class ZMQClientCamera(CameraDriver):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{host}:{port}")
-        self._socket.setsockopt(zmq.RCVTIMEO, 2000)
-        self._socket.setsockopt(zmq.SNDTIMEO, 2000)
+        self._socket.setsockopt(zmq.RCVTIMEO, 10000)
+        self._socket.setsockopt(zmq.SNDTIMEO, 10000)
         self._host = host
         self._port = port
 
@@ -33,15 +33,18 @@ class ZMQClientCamera(CameraDriver):
         """
         # pack the image_size and send it to the server
         send_message = pickle.dumps(img_size)
-        try:
-            self._socket.send(send_message)
-            state_dict = pickle.loads(self._socket.recv())
-        except zmq.error.Again as exc:
-            raise RuntimeError(
-                f"Camera server timeout at tcp://{self._host}:{self._port}. "
-                "Check launch_camera_nodes.py and selected camera ports."
-            ) from exc
-        return state_dict
+        for attempt in range(2):
+            try:
+                self._socket.send(send_message)
+                state_dict = pickle.loads(self._socket.recv())
+                return state_dict
+            except zmq.error.Again as exc:
+                if attempt == 1:
+                    raise RuntimeError(
+                        f"Camera server timeout at tcp://{self._host}:{self._port}. "
+                        "Check launch_camera_nodes.py, selected camera ports, and make sure rsviewer is closed before recording."
+                    ) from exc
+        raise RuntimeError("Unexpected camera read failure")
 
 
 class ZMQServerCamera:
