@@ -34,29 +34,15 @@ tmux send-keys -t $SESSION:2 "python experiments/launch_nodes.py --robot panda -
 
 sleep 3
 
-# Fenster 3: Camera nodes
-tmux new-window -t $SESSION:3 -n "cameras"
+# Fenster 3: Env nur vorbereiten
+tmux new-window -t $SESSION:3 -n "env"
 tmux send-keys -t $SESSION:3 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:3 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:3 "cd ~/gello_software" C-m
-tmux send-keys -t $SESSION:3 "pkill -f rsviewer || true" C-m
-tmux send-keys -t $SESSION:3 "echo Starting Intel RealSense with rsviewer" C-m
-tmux send-keys -t $SESSION:3 "rsviewer >/tmp/rsviewer_gello.log 2>&1 &" C-m
-tmux send-keys -t $SESSION:3 "sleep 4" C-m
-tmux send-keys -t $SESSION:3 "pkill -f rsviewer || true" C-m
-tmux send-keys -t $SESSION:3 "sleep 1" C-m
-tmux send-keys -t $SESSION:3 "python experiments/launch_camera_nodes.py --hostname 127.0.0.1" C-m
+tmux send-keys -t $SESSION:3 "echo 'Run with camera recording:'" C-m
+tmux send-keys -t $SESSION:3 "echo 'Direct Ethernet camera (recommended):'" C-m
+tmux send-keys -t $SESSION:3 "echo 'python experiments/run_env.py --agent=gello --use-save-interface --wrist-camera-url <rtsp_or_gige_url>'" C-m
 
-sleep 2
-
-# Fenster 4: Env nur vorbereiten
-tmux new-window -t $SESSION:4 -n "env"
-tmux send-keys -t $SESSION:4 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
-tmux send-keys -t $SESSION:4 "conda activate polymetis" C-m
-tmux send-keys -t $SESSION:4 "cd ~/gello_software" C-m
-tmux send-keys -t $SESSION:4 "echo 'Run with camera recording:'" C-m
-tmux send-keys -t $SESSION:4 "echo 'python experiments/run_env.py --agent=gello --use-save-interface --use-wrist-camera --wrist-camera-port 5000'" C-m
-
-tmux select-window -t $SESSION:4
+tmux select-window -t $SESSION:3
 tmux attach-session -t $SESSION
 
