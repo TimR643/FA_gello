@@ -283,7 +283,30 @@ For non-YAM setups, use the following:
 ```bash
 python experiments/run_env.py --agent=gello --use-save-interface
 ```
-Process collected data:
+
+#### RealSense / FRAMOS D435e integration (for LeRobot-compatible demos)
+
+1. Start camera servers (one process per detected RealSense/FRAMOS device):
+```bash
+python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+```
+This script assigns ports starting at `5000` in detection order (`5000`, `5001`, ...).
+
+2. Start teleoperation + recording with the same keyboard controls (`s` start, `q` stop):
+```bash
+python experiments/run_env.py \
+  --agent=gello \
+  --use-save-interface \
+  --use-wrist-camera \
+  --use-base-camera \
+  --wrist-camera-port 5000 \
+  --base-camera-port 5001 \
+  --hostname 127.0.0.1
+```
+
+Both robot state and camera streams are captured in the same demo episodes, so camera recording starts/stops together with the GELLO recording session.
+
+3. Convert to training format:
 ```bash
 python gello/data_utils/demo_to_gdict.py --source-dir=<source_dir>
 ```

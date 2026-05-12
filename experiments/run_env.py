@@ -9,6 +9,7 @@ import tyro
 from gello.env import RobotEnv
 from gello.robots.robot import PrintRobot
 from gello.utils.launch_utils import instantiate_from_dict
+from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
 
@@ -28,6 +29,8 @@ class Args:
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
     robot_type: str = None  # only needed for quest agent or spacemouse agent
+    use_wrist_camera: bool = False
+    use_base_camera: bool = False
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -48,11 +51,15 @@ def main(args):
         robot_client = PrintRobot(8, dont_print=True)
         camera_clients = {}
     else:
-        camera_clients = {
-            # you can optionally add camera nodes here for imitation learning purposes
-            # "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=args.hostname),
-            # "base": ZMQClientCamera(port=args.base_camera_port, host=args.hostname),
-        }
+        camera_clients = {}
+        if args.use_wrist_camera:
+            camera_clients["wrist"] = ZMQClientCamera(
+                port=args.wrist_camera_port, host=args.hostname
+            )
+        if args.use_base_camera:
+            camera_clients["base"] = ZMQClientCamera(
+                port=args.base_camera_port, host=args.hostname
+            )
         robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
     env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
 
