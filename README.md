@@ -310,6 +310,14 @@ Both robot state and camera streams are captured in the same demo episodes, so c
 If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
 
 
+
+**Intel D435e FRAMOS over Ethernet (no ZMQ camera server):**
+If your wrist camera is connected via Ethernet/switch, use the stream URL directly in `run_env.py`:
+```bash
+python experiments/run_env.py   --agent=gello   --use-save-interface   --wrist-camera-url "<rtsp_or_gige_url>"
+```
+This records the wrist stream in the same `s`/`q` episodes as GELLO robot data.
+
 **Alternative without extra camera server (recommended if detection via ZMQ launcher is flaky):**
 ```bash
 python experiments/run_env.py   --agent=gello   --use-save-interface   --use-direct-realsense

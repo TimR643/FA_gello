@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import tyro
 
+from gello.cameras.opencv_camera import OpenCVCamera
 from gello.cameras.realsense_camera import RealSenseCamera, get_device_ids
 from gello.env import RobotEnv
 from gello.robots.robot import PrintRobot
@@ -34,6 +35,7 @@ class Args:
     use_base_camera: bool = False
     use_direct_realsense: bool = False
     wrist_camera_id: Optional[str] = None
+    wrist_camera_url: Optional[str] = None
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -55,7 +57,10 @@ def main(args):
         camera_clients = {}
     else:
         camera_clients = {}
-        if args.use_direct_realsense:
+        if args.wrist_camera_url is not None:
+            print(f"Using wrist network camera URL: {args.wrist_camera_url}")
+            camera_clients["wrist"] = OpenCVCamera(source=args.wrist_camera_url)
+        elif args.use_direct_realsense:
             wrist_id = args.wrist_camera_id
             if wrist_id is None:
                 ids = get_device_ids(reset_devices=False)
