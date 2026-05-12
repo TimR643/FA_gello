@@ -311,6 +311,26 @@ Both robot state and camera streams are captured in the same demo episodes, so c
 python gello/data_utils/demo_to_gdict.py --source-dir=<source_dir>
 ```
 
+> **Panda workflow note:** You can keep using `./start_gello_panda.sh`.
+> In the tmux `env` window, start recording with camera flags:
+> ```bash
+> python experiments/run_env.py \
+>   --agent=gello \
+>   --use-save-interface \
+>   --use-wrist-camera \
+>   --use-base-camera \
+>   --wrist-camera-port 5000 \
+>   --base-camera-port 5001
+> ```
+> Then press `s` to start and `q` to stop: robot + camera are saved in the same `.pkl` frames.
+> For LeRobot conversion in this repo, use:
+> ```bash
+> python convert_gello_pkl_to_lerobot_v3.py \
+>   --raw-root <path_to_saved_pkls> \
+>   --output-root <output_dataset_dir> \
+>   --repo-id <user/dataset_name>
+> ```
+
 ### Bimanual Operation
 
 The recommended way to use bimanual mode is with `launch_yaml.py`. Pass a config file for the right arm to `--right-config-path`.
