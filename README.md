@@ -286,9 +286,10 @@ python experiments/run_env.py --agent=gello --use-save-interface
 
 #### RealSense / FRAMOS D435e integration (for LeRobot-compatible demos)
 
-1. Start `rsviewer` first (important: use `rsviewer`, not `realsense-viewer`), then start camera servers:
+1. Run `rsviewer` first (important: use `rsviewer`, not `realsense-viewer`) as a short warm-up, **close it again**, then start camera servers:
 ```bash
 rsviewer
+# wait a few seconds, then close rsviewer
 python experiments/launch_camera_nodes.py --hostname 127.0.0.1
 ```
 This script assigns ports starting at `5000` in detection order (`5000`, `5001`, ...).

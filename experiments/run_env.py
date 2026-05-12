@@ -28,7 +28,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    robot_type: str = None  # only needed for quest agent or spacemouse agent
+    robot_type: Optional[str] = None  # only needed for quest agent or spacemouse agent
     use_wrist_camera: bool = False
     use_base_camera: bool = False
     hz: int = 100
