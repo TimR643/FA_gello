@@ -283,10 +283,82 @@ For non-YAM setups, use the following:
 ```bash
 python experiments/run_env.py --agent=gello --use-save-interface
 ```
-Process collected data:
+
+#### RealSense / FRAMOS D435e integration (for LeRobot-compatible demos)
+
+1. Run `rsviewer` first (important: use `rsviewer`, not `realsense-viewer`) as a short warm-up, **close it again**, then start camera servers:
+```bash
+rsviewer
+# wait a few seconds, then close rsviewer
+python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+# keep this terminal open; stop with Ctrl+C
+```
+This script assigns ports starting at `5000` in detection order (`5000`, `5001`, ...).
+
+2. Start teleoperation + recording with the same keyboard controls (`s` start, `q` stop):
+```bash
+python experiments/run_env.py \
+  --agent=gello \
+  --use-save-interface \
+  --use-wrist-camera \
+  --wrist-camera-port 5000 \
+  --hostname 127.0.0.1
+```
+
+Both robot state and camera streams are captured in the same demo episodes, so camera recording starts/stops together with the GELLO recording session.
+
+If you have a second camera, add `--use-base-camera --base-camera-port 5001`.
+
+
+
+**Intel D435e FRAMOS over Ethernet (no ZMQ camera server):**
+If your wrist camera is connected via Ethernet/switch, use the stream URL directly in `run_env.py`:
+```bash
+python experiments/run_env.py   --agent=gello   --use-save-interface   --wrist-camera-url "<rtsp_or_gige_url>"
+```
+This records the wrist stream in the same `s`/`q` episodes as GELLO robot data.
+Replace `<rtsp_or_gige_url>` with your actual stream URL (do not include the literal `<...>` placeholder).
+
+**Alternative without extra camera server (recommended if detection via ZMQ launcher is flaky):**
+```bash
+python experiments/run_env.py   --agent=gello   --use-save-interface   --use-direct-realsense
+```
+This opens the first detected RealSense/FRAMOS camera directly in `run_env.py` and records it as `wrist` camera data.
+You can optionally pin a serial with `--wrist-camera-id <serial>`.
+
+If you get `Camera server timeout at tcp://127.0.0.1:5000`, run a quick camera-only check in a second terminal:
+```bash
+python experiments/launch_camera_nodes.py --hostname 127.0.0.1
+# keep this terminal open; stop with Ctrl+C
+# in another terminal:
+python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000
+# optional GUI preview (requires Qt/OpenCV GUI):
+python experiments/launch_camera_clients.py --hostname 127.0.0.1 --ports 5000 --visualize True
+```
+If the headless client prints frame shapes (`rgb=... depth=...`), camera transport is OK and you can start `run_env.py`.
+
+3. Convert to training format:
 ```bash
 python gello/data_utils/demo_to_gdict.py --source-dir=<source_dir>
 ```
+
+> **Panda workflow note:** You can keep using `./start_gello_panda.sh`.
+> In the tmux `env` window, start recording with camera flags:
+> ```bash
+> python experiments/run_env.py \
+>   --agent=gello \
+>   --use-save-interface \
+>   --use-wrist-camera \
+>   --wrist-camera-port 5000
+> ```
+> Then press `s` to start and `q` to stop: robot + camera are saved in the same `.pkl` frames.
+> For LeRobot conversion in this repo, use:
+> ```bash
+> python convert_gello_pkl_to_lerobot_v3.py \
+>   --raw-root <path_to_saved_pkls> \
+>   --output-root <output_dataset_dir> \
+>   --repo-id <user/dataset_name>
+> ```
 
 ### Bimanual Operation
 
