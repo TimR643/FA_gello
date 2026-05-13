@@ -7,16 +7,18 @@ import numpy as np
 from gello.cameras.camera import CameraDriver
 
 
-def get_device_ids() -> List[str]:
+def get_device_ids(reset_devices: bool = False) -> List[str]:
     import pyrealsense2 as rs
 
     ctx = rs.context()
     devices = ctx.query_devices()
     device_ids = []
     for dev in devices:
-        dev.hardware_reset()
         device_ids.append(dev.get_info(rs.camera_info.serial_number))
-    time.sleep(2)
+        if reset_devices:
+            dev.hardware_reset()
+    if reset_devices:
+        time.sleep(2)
     return device_ids
 
 
