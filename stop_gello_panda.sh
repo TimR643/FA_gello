@@ -12,3 +12,5 @@ sudo pkill -9 launch_robot.py
 sudo pkill -9 -f "python experiments/launch_nodes.py"
 sudo pkill -9 -f "python experiments/run_env.py"
 
+sudo pkill -9 -f "python experiments/launch_camera_nodes.py"
+sudo pkill -9 rsviewer

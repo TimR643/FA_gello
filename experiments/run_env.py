@@ -6,9 +6,12 @@ from typing import Optional, Tuple
 import numpy as np
 import tyro
 
+from gello.cameras.opencv_camera import OpenCVCamera
+from gello.cameras.realsense_camera import RealSenseCamera, get_device_ids
 from gello.env import RobotEnv
 from gello.robots.robot import PrintRobot
 from gello.utils.launch_utils import instantiate_from_dict
+from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
 
@@ -27,7 +30,12 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    robot_type: str = None  # only needed for quest agent or spacemouse agent
+    robot_type: Optional[str] = None  # only needed for quest agent or spacemouse agent
+    use_wrist_camera: bool = False
+    use_base_camera: bool = False
+    use_direct_realsense: bool = False
+    wrist_camera_id: Optional[str] = None
+    wrist_camera_url: Optional[str] = None
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -48,11 +56,28 @@ def main(args):
         robot_client = PrintRobot(8, dont_print=True)
         camera_clients = {}
     else:
-        camera_clients = {
-            # you can optionally add camera nodes here for imitation learning purposes
-            # "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=args.hostname),
-            # "base": ZMQClientCamera(port=args.base_camera_port, host=args.hostname),
-        }
+        camera_clients = {}
+        if args.wrist_camera_url is not None:
+            print(f"Using wrist network camera URL: {args.wrist_camera_url}")
+            camera_clients["wrist"] = OpenCVCamera(source=args.wrist_camera_url)
+        elif args.use_direct_realsense:
+            wrist_id = args.wrist_camera_id
+            if wrist_id is None:
+                ids = get_device_ids(reset_devices=False)
+                if len(ids) == 0:
+                    raise RuntimeError("No RealSense/FRAMOS camera found for direct mode.")
+                wrist_id = ids[0]
+                print(f"Using direct RealSense camera id: {wrist_id}")
+            camera_clients["wrist"] = RealSenseCamera(device_id=wrist_id)
+        else:
+            if args.use_wrist_camera:
+                camera_clients["wrist"] = ZMQClientCamera(
+                    port=args.wrist_camera_port, host=args.hostname
+                )
+            if args.use_base_camera:
+                camera_clients["base"] = ZMQClientCamera(
+                    port=args.base_camera_port, host=args.hostname
+                )
         robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
     env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
 
