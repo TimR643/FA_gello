@@ -39,6 +39,10 @@ tmux new-window -t $SESSION:3 -n "env"
 tmux send-keys -t $SESSION:3 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:3 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:3 "cd ~/gello_software" C-m
+tmux send-keys -t $SESSION:3 "echo 'Run with camera recording:'" C-m
+tmux send-keys -t $SESSION:3 "echo 'Direct Ethernet camera (recommended):'" C-m
+tmux send-keys -t $SESSION:3 "echo 'python experiments/run_env.py --agent=gello --use-save-interface --wrist-camera-url <rtsp_or_gige_url>'" C-m
 
 tmux select-window -t $SESSION:3
 tmux attach-session -t $SESSION
+
