@@ -64,6 +64,17 @@ def get_image_from_obs(obs: dict) -> np.ndarray:
     raise KeyError(f"No image key found. Available keys: {list(obs.keys())}")
 
 
+def parse_vec(text: str, dtype=float) -> np.ndarray:
+    values = [v.strip() for v in text.split(",") if v.strip()]
+    return np.array([dtype(v) for v in values])
+
+
+def apply_action_mapping(action: np.ndarray, permutation: np.ndarray, signs: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+    mapped = action[permutation].copy()
+    mapped = mapped * signs + offsets
+    return mapped
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
@@ -71,7 +82,48 @@ def main():
     parser.add_argument("--hz", type=float, default=5.0)
     parser.add_argument("--max-delta", type=float, default=0.015)
     parser.add_argument("--max-gripper-delta", type=float, default=0.03)
+    parser.add_argument(
+        "--action-permutation",
+        type=str,
+        default="0,1,2,3,4,5,6,7",
+        help="Comma-separated action index permutation to map policy action into robot joint order.",
+    )
+    parser.add_argument(
+        "--action-signs",
+        type=str,
+        default="1,1,1,1,1,1,1,1",
+        help="Comma-separated +/-1 signs applied after permutation.",
+    )
+    parser.add_argument(
+        "--action-offsets",
+        type=str,
+        default="0,0,0,0,0,0,0,0",
+        help="Comma-separated additive offsets in radians/meters after permutation and sign.",
+    )
+    parser.add_argument(
+        "--hold-gripper",
+        action="store_true",
+        help="Override gripper command with current gripper state.",
+    )
     args = parser.parse_args()
+
+    permutation = parse_vec(args.action_permutation, int)
+    signs = parse_vec(args.action_signs, float)
+    offsets = parse_vec(args.action_offsets, float)
+
+    if permutation.shape != (8,):
+        raise ValueError(f"--action-permutation must contain exactly 8 values, got {permutation}")
+    if signs.shape != (8,):
+        raise ValueError(f"--action-signs must contain exactly 8 values, got {signs}")
+    if offsets.shape != (8,):
+        raise ValueError(f"--action-offsets must contain exactly 8 values, got {offsets}")
+
+    if sorted(permutation.tolist()) != list(range(8)):
+        raise ValueError(f"--action-permutation must be a permutation of 0..7, got {permutation.tolist()}")
+
+    signs_are_binary = np.isin(signs, [-1.0, 1.0]).all()
+    if not signs_are_binary:
+        raise ValueError(f"--action-signs entries must be only -1 or 1, got {signs.tolist()}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
@@ -101,6 +153,10 @@ def main():
     print("hz:", args.hz)
     print("max_delta joints:", args.max_delta)
     print("max_delta gripper:", args.max_gripper_delta)
+    print("hold_gripper:", args.hold_gripper)
+    print("action_permutation:", permutation.tolist())
+    print("action_signs:", signs.astype(int).tolist())
+    print("action_offsets:", np.round(offsets, 4).tolist())
     print("\nKeep your hand on the Franka enabling switch / emergency stop.")
     print("First test should be WITHOUT objects in the workspace.")
 
@@ -134,7 +190,11 @@ def main():
         if not np.all(np.isfinite(pred_action)):
             raise RuntimeError(f"Policy produced NaN/Inf action: {pred_action}")
 
-        raw_delta = pred_action - state
+        mapped_action = apply_action_mapping(pred_action, permutation, signs, offsets)
+        if args.hold_gripper:
+            mapped_action[7] = state[7]
+
+        raw_delta = mapped_action - state
 
         clipped_delta = raw_delta.copy()
         clipped_delta[:7] = np.clip(clipped_delta[:7], -args.max_delta, args.max_delta)
@@ -149,7 +209,8 @@ def main():
 
         print(f"\nStep {i + 1}/{steps}")
         print("state      :", np.round(state, 3))
-        print("policy     :", np.round(pred_action, 3))
+        print("policy raw :", np.round(pred_action, 3))
+        print("policy map :", np.round(mapped_action, 3))
         print("raw delta  :", np.round(raw_delta, 3))
         print("sent target:", np.round(target, 3))
 
