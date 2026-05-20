@@ -1,5 +1,6 @@
 import argparse
 import time
+import itertools
 import numpy as np
 import torch
 
@@ -64,6 +65,47 @@ def get_image_from_obs(obs: dict) -> np.ndarray:
     raise KeyError(f"No image key found. Available keys: {list(obs.keys())}")
 
 
+def parse_vec(text: str, dtype=float) -> np.ndarray:
+    values = [v.strip() for v in text.split(",") if v.strip()]
+    return np.array([dtype(v) for v in values])
+
+
+def apply_action_mapping(action: np.ndarray, permutation: np.ndarray, signs: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+    mapped = action[permutation].copy()
+    mapped = mapped * signs + offsets
+    return mapped
+
+
+def infer_arm_mapping_from_state(state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Infer arm joint permutation/signs that best align action to current state.
+
+    Searches all 7! permutations and 2^7 sign combinations for the 7 arm joints,
+    and minimizes mean absolute error between mapped action and current state.
+    """
+    arm_state = state[:7]
+    arm_action = action[:7]
+
+    best_error = float("inf")
+    best_perm = np.arange(7, dtype=int)
+    best_signs = np.ones(7, dtype=np.float32)
+
+    sign_options = np.array(list(itertools.product([-1.0, 1.0], repeat=7)), dtype=np.float32)
+    for perm in itertools.permutations(range(7)):
+        perm = np.array(perm, dtype=int)
+        permuted = arm_action[perm]
+        # Broadcast over all sign options for vectorized scoring.
+        candidates = permuted[None, :] * sign_options
+        errors = np.mean(np.abs(candidates - arm_state[None, :]), axis=1)
+        best_idx = int(np.argmin(errors))
+        err = float(errors[best_idx])
+        if err < best_error:
+            best_error = err
+            best_perm = perm
+            best_signs = sign_options[best_idx]
+
+    return best_perm, best_signs, best_error
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
@@ -71,7 +113,53 @@ def main():
     parser.add_argument("--hz", type=float, default=5.0)
     parser.add_argument("--max-delta", type=float, default=0.015)
     parser.add_argument("--max-gripper-delta", type=float, default=0.03)
+    parser.add_argument(
+        "--action-permutation",
+        type=str,
+        default="0,1,2,3,4,5,6,7",
+        help="Comma-separated action index permutation to map policy action into robot joint order.",
+    )
+    parser.add_argument(
+        "--action-signs",
+        type=str,
+        default="1,1,1,1,1,1,1,1",
+        help="Comma-separated +/-1 signs applied after permutation.",
+    )
+    parser.add_argument(
+        "--action-offsets",
+        type=str,
+        default="0,0,0,0,0,0,0,0",
+        help="Comma-separated additive offsets in radians/meters after permutation and sign.",
+    )
+    parser.add_argument(
+        "--hold-gripper",
+        action="store_true",
+        help="Override gripper command with current gripper state.",
+    )
+    parser.add_argument(
+        "--auto-infer-arm-mapping",
+        action="store_true",
+        help="Infer a 7-DOF arm permutation/sign mapping from the first observation and policy output.",
+    )
     args = parser.parse_args()
+
+    permutation = parse_vec(args.action_permutation, int)
+    signs = parse_vec(args.action_signs, float)
+    offsets = parse_vec(args.action_offsets, float)
+
+    if permutation.shape != (8,):
+        raise ValueError(f"--action-permutation must contain exactly 8 values, got {permutation}")
+    if signs.shape != (8,):
+        raise ValueError(f"--action-signs must contain exactly 8 values, got {signs}")
+    if offsets.shape != (8,):
+        raise ValueError(f"--action-offsets must contain exactly 8 values, got {offsets}")
+
+    if sorted(permutation.tolist()) != list(range(8)):
+        raise ValueError(f"--action-permutation must be a permutation of 0..7, got {permutation.tolist()}")
+
+    signs_are_binary = np.isin(signs, [-1.0, 1.0]).all()
+    if not signs_are_binary:
+        raise ValueError(f"--action-signs entries must be only -1 or 1, got {signs.tolist()}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
@@ -101,6 +189,10 @@ def main():
     print("hz:", args.hz)
     print("max_delta joints:", args.max_delta)
     print("max_delta gripper:", args.max_gripper_delta)
+    print("hold_gripper:", args.hold_gripper)
+    print("action_permutation:", permutation.tolist())
+    print("action_signs:", signs.astype(int).tolist())
+    print("action_offsets:", np.round(offsets, 4).tolist())
     print("\nKeep your hand on the Franka enabling switch / emergency stop.")
     print("First test should be WITHOUT objects in the workspace.")
 
@@ -111,6 +203,7 @@ def main():
 
     dt = 1.0 / args.hz
     steps = int(args.duration * args.hz)
+    auto_mapping_applied = False
 
     for i in range(steps):
         obs = env.get_obs()
@@ -134,7 +227,20 @@ def main():
         if not np.all(np.isfinite(pred_action)):
             raise RuntimeError(f"Policy produced NaN/Inf action: {pred_action}")
 
-        raw_delta = pred_action - state
+        if args.auto_infer_arm_mapping and not auto_mapping_applied:
+            best_perm_arm, best_sign_arm, best_err = infer_arm_mapping_from_state(state, pred_action)
+            permutation[:7] = best_perm_arm
+            signs[:7] = best_sign_arm
+            auto_mapping_applied = True
+            print("\n[AUTO-MAP] Inferred arm permutation:", permutation[:7].tolist())
+            print("[AUTO-MAP] Inferred arm signs:", signs[:7].astype(int).tolist())
+            print("[AUTO-MAP] Mean abs arm error after mapping:", round(best_err, 4))
+
+        mapped_action = apply_action_mapping(pred_action, permutation, signs, offsets)
+        if args.hold_gripper:
+            mapped_action[7] = state[7]
+
+        raw_delta = mapped_action - state
 
         clipped_delta = raw_delta.copy()
         clipped_delta[:7] = np.clip(clipped_delta[:7], -args.max_delta, args.max_delta)
@@ -149,7 +255,8 @@ def main():
 
         print(f"\nStep {i + 1}/{steps}")
         print("state      :", np.round(state, 3))
-        print("policy     :", np.round(pred_action, 3))
+        print("policy raw :", np.round(pred_action, 3))
+        print("policy map :", np.round(mapped_action, 3))
         print("raw delta  :", np.round(raw_delta, 3))
         print("sent target:", np.round(target, 3))
 
