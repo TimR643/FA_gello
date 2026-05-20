@@ -178,10 +178,12 @@ def create_or_load_dataset(
 
     if output_root.exists() and append:
         print(f"Bestehender LeRobot-Datensatz wird erweitert: {output_root}")
-        dataset = LeRobotDataset(
+
+        dataset = LeRobotDataset.resume(
             repo_id=repo_id,
             root=output_root,
         )
+
         return dataset
 
     if output_root.exists() and not append:
