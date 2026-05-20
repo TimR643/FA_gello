@@ -7,6 +7,7 @@ LEFT:
   num_arm_joints: 7
   joint_signs: [1, -1, 1, -1, 1, 1, 1]
   gripper: true
+  invert_gripper_direction: false
   assembly_offsets: [0.000, 0.000, 3.142, 3.142, 3.142, 4.712, 0.000] # rad
   gripper_range_rad: [2.00, 3.22]
   # Optional Dynamixel control parameters for all arm joints (+ gripper):
@@ -26,6 +27,7 @@ RIGHT:
   num_arm_joints: 7
   joint_signs: [1, -1, 1, -1, 1, 1, 1]
   gripper: true
+  invert_gripper_direction: false
   assembly_offsets: [0.000, 0.000, 3.142, 3.142, 3.142, 4.712, 0.000] # rad
   gripper_range_rad: [2.00, 3.22]
   # Optional Dynamixel control parameters for all arm joints (+ gripper):

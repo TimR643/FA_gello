@@ -69,6 +69,15 @@ class GelloParameterConfig:
             ),
             ParameterConfig(
                 ParameterDescriptor(
+                    name="invert_gripper_direction",
+                    type=ParameterType.PARAMETER_BOOL,
+                    description="Invert normalized gripper output (open<->close)",
+                    read_only=True,
+                ),
+                False,
+            ),
+            ParameterConfig(
+                ParameterDescriptor(
                     name="gripper_range_rad",
                     type=ParameterType.PARAMETER_DOUBLE_ARRAY,
                     description="Gripper range in radians",

@@ -50,7 +50,7 @@ JointImpedanceController::state_interface_configuration() const {
 
 controller_interface::return_type JointImpedanceController::update(
     const rclcpp::Time& /*time*/,
-    const rclcpp::Duration& /*period*/) {
+    const rclcpp::Duration& period) {
   updateJointStates_();
   Vector7d q_goal;
   Vector7d tau_d_calculated;
@@ -90,6 +90,10 @@ controller_interface::return_type JointImpedanceController::update(
     for (int i = 0; i < num_joints; ++i) {
       q_goal(i) = gello_position_values_[i];
     }
+    q_goal = limitGoalRate_(q_goal, period.seconds());
+  } else {
+    q_goal_prev_ = q_goal;
+    goal_rate_limiter_initialized_ = true;
   }
 
   tau_d_calculated = calculateTauDGains_(q_goal);
@@ -124,6 +128,7 @@ CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_id", "");
     auto_declare<std::vector<double>>("k_gains", {});
     auto_declare<std::vector<double>>("d_gains", {});
+    auto_declare<double>("max_goal_joint_velocity", 1.5);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception thrown during init stage with message: %s \n", e.what());
     return CallbackReturn::ERROR;
@@ -145,6 +150,7 @@ CallbackReturn JointImpedanceController::on_configure(
   auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
   auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
   auto k_alpha = get_node()->get_parameter("k_alpha").as_double();
+  auto max_goal_joint_velocity = get_node()->get_parameter("max_goal_joint_velocity").as_double();
 
   if (!validateGains_(k_gains, "k_gains") || !validateGains_(d_gains, "d_gains")) {
     return CallbackReturn::FAILURE;
@@ -161,6 +167,11 @@ CallbackReturn JointImpedanceController::on_configure(
   }
 
   k_alpha_ = k_alpha;
+  if (max_goal_joint_velocity <= 0.0) {
+    RCLCPP_FATAL(get_node()->get_logger(), "max_goal_joint_velocity should be > 0");
+    return CallbackReturn::FAILURE;
+  }
+  max_goal_joint_velocity_ = max_goal_joint_velocity;
 
   dq_filtered_.setZero();
 
@@ -187,6 +198,8 @@ CallbackReturn JointImpedanceController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   last_joint_state_time_ = get_node()->now();
   dq_filtered_.setZero();
+  q_goal_prev_.setZero();
+  goal_rate_limiter_initialized_ = false;
   start_time_ = this->get_node()->now();
 
   return CallbackReturn::SUCCESS;
@@ -263,6 +276,29 @@ bool JointImpedanceController::initializeMotionGenerator_() {
   const double motion_generator_speed_factor = 0.2;
   motion_generator_ = std::make_unique<MotionGenerator>(motion_generator_speed_factor, q_, q_goal);
   return true;
+}
+
+JointImpedanceController::Vector7d JointImpedanceController::limitGoalRate_(
+    const Vector7d& q_goal,
+    double dt_seconds) {
+  if (dt_seconds <= 0.0) {
+    return q_goal;
+  }
+
+  if (!goal_rate_limiter_initialized_) {
+    q_goal_prev_ = q_goal;
+    goal_rate_limiter_initialized_ = true;
+    return q_goal;
+  }
+
+  const double max_delta = max_goal_joint_velocity_ * dt_seconds;
+  Vector7d q_goal_delta = q_goal - q_goal_prev_;
+  for (int i = 0; i < num_joints; ++i) {
+    q_goal_delta(i) = std::clamp(q_goal_delta(i), -max_delta, max_delta);
+  }
+
+  q_goal_prev_ += q_goal_delta;
+  return q_goal_prev_;
 }
 
 }  // namespace franka_fr3_arm_controllers
