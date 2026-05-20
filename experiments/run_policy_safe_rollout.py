@@ -1,5 +1,6 @@
 import argparse
 import time
+import itertools
 import numpy as np
 import torch
 
@@ -75,6 +76,36 @@ def apply_action_mapping(action: np.ndarray, permutation: np.ndarray, signs: np.
     return mapped
 
 
+def infer_arm_mapping_from_state(state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Infer arm joint permutation/signs that best align action to current state.
+
+    Searches all 7! permutations and 2^7 sign combinations for the 7 arm joints,
+    and minimizes mean absolute error between mapped action and current state.
+    """
+    arm_state = state[:7]
+    arm_action = action[:7]
+
+    best_error = float("inf")
+    best_perm = np.arange(7, dtype=int)
+    best_signs = np.ones(7, dtype=np.float32)
+
+    sign_options = np.array(list(itertools.product([-1.0, 1.0], repeat=7)), dtype=np.float32)
+    for perm in itertools.permutations(range(7)):
+        perm = np.array(perm, dtype=int)
+        permuted = arm_action[perm]
+        # Broadcast over all sign options for vectorized scoring.
+        candidates = permuted[None, :] * sign_options
+        errors = np.mean(np.abs(candidates - arm_state[None, :]), axis=1)
+        best_idx = int(np.argmin(errors))
+        err = float(errors[best_idx])
+        if err < best_error:
+            best_error = err
+            best_perm = perm
+            best_signs = sign_options[best_idx]
+
+    return best_perm, best_signs, best_error
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
@@ -104,6 +135,11 @@ def main():
         "--hold-gripper",
         action="store_true",
         help="Override gripper command with current gripper state.",
+    )
+    parser.add_argument(
+        "--auto-infer-arm-mapping",
+        action="store_true",
+        help="Infer a 7-DOF arm permutation/sign mapping from the first observation and policy output.",
     )
     args = parser.parse_args()
 
@@ -167,6 +203,7 @@ def main():
 
     dt = 1.0 / args.hz
     steps = int(args.duration * args.hz)
+    auto_mapping_applied = False
 
     for i in range(steps):
         obs = env.get_obs()
@@ -189,6 +226,15 @@ def main():
 
         if not np.all(np.isfinite(pred_action)):
             raise RuntimeError(f"Policy produced NaN/Inf action: {pred_action}")
+
+        if args.auto_infer_arm_mapping and not auto_mapping_applied:
+            best_perm_arm, best_sign_arm, best_err = infer_arm_mapping_from_state(state, pred_action)
+            permutation[:7] = best_perm_arm
+            signs[:7] = best_sign_arm
+            auto_mapping_applied = True
+            print("\n[AUTO-MAP] Inferred arm permutation:", permutation[:7].tolist())
+            print("[AUTO-MAP] Inferred arm signs:", signs[:7].astype(int).tolist())
+            print("[AUTO-MAP] Mean abs arm error after mapping:", round(best_err, 4))
 
         mapped_action = apply_action_mapping(pred_action, permutation, signs, offsets)
         if args.hold_gripper:
