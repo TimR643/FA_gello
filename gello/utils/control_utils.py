@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from lerobot.datasets import LeRobotDataset
-
 import numpy as np
 
 from gello.agents.agent import Agent
@@ -160,6 +158,13 @@ class LeRobotSaveInterface:
         camera_keys: tuple[str, ...] = ("wrist", "base"),
     ):
         from gello.data_utils.keyboard_interface import KBReset
+        try:
+            from lerobot.datasets import LeRobotDataset
+        except ImportError as exc:
+            raise ImportError(
+                "LeRobot is not installed in this environment. "
+                "Install it or use --save-mode pkl."
+            ) from exc
 
         self.kb_interface = KBReset()
         self.task = task
