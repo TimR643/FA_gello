@@ -27,6 +27,7 @@ class Args:
     robot_port: int = 6001
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
+    use_base_camera: bool = True
     hostname: str = "127.0.0.1"
     robot_hostname: Optional[str] = None
     camera_hostname: Optional[str] = None
@@ -63,8 +64,11 @@ def main(args):
         camera_clients = {
             # you can optionally add camera nodes here for imitation learning purposes
             "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=camera_host),
-            "base": ZMQClientCamera(port=args.base_camera_port, host=camera_host),
         }
+        if args.use_base_camera:
+            camera_clients["base"] = ZMQClientCamera(
+                port=args.base_camera_port, host=camera_host
+            )
         robot_client = ZMQClientRobot(port=args.robot_port, host=robot_host)
     env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
 
@@ -254,7 +258,7 @@ def main(args):
                 fps=args.lerobot_fps,
                 task=args.lerobot_task,
                 robot_type=args.lerobot_robot_type,
-                camera_keys=("wrist", "base"),
+                camera_keys=("wrist", "base") if args.use_base_camera else ("wrist",),
             )
         else:
             save_interface = SaveInterface(
