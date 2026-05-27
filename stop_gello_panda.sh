@@ -1,6 +1,7 @@
 #!/bin/bash
 
 tmux kill-session -t gello_panda 2>/dev/null
+tmux kill-session -t gello_panda_onecam_lerobot 2>/dev/null
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate polymetis
