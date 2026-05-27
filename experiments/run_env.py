@@ -37,7 +37,13 @@ class Args:
     gello_port: Optional[str] = None
     mock: bool = False
     use_save_interface: bool = False
+    save_mode: str = "pkl"
     data_dir: str = "~/bc_data"
+    lerobot_root: str = "~/lerobot_data"
+    lerobot_repo_id: str = "local/panda_gello"
+    lerobot_fps: int = 10
+    lerobot_task: str = "Teleoperate the Panda robot with GELLO."
+    lerobot_robot_type: str = "panda_gello"
     bimanual: bool = False
     verbose: bool = False
 
@@ -237,13 +243,23 @@ def main(args):
             )
         exit()
 
-    from gello.utils.control_utils import SaveInterface, run_control_loop
+    from gello.utils.control_utils import LeRobotSaveInterface, SaveInterface, run_control_loop
 
     save_interface = None
     if args.use_save_interface:
-        save_interface = SaveInterface(
-            data_dir=args.data_dir, agent_name=args.agent, expand_user=True
-        )
+        if args.save_mode == "lerobot":
+            save_interface = LeRobotSaveInterface(
+                root=args.lerobot_root,
+                repo_id=args.lerobot_repo_id,
+                fps=args.lerobot_fps,
+                task=args.lerobot_task,
+                robot_type=args.lerobot_robot_type,
+                camera_keys=("wrist", "base"),
+            )
+        else:
+            save_interface = SaveInterface(
+                data_dir=args.data_dir, agent_name=args.agent, expand_user=True
+            )
 
     run_control_loop(env, agent, save_interface, use_colors=True)
 

@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from lerobot.datasets import LeRobotDataset
+
 import numpy as np
 
 from gello.agents.agent import Agent
@@ -131,6 +133,92 @@ class SaveInterface:
 
         return None
 
+
+
+JOINT_NAMES = [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+    "gripper",
+]
+
+
+class LeRobotSaveInterface:
+    """Keyboard-based direct recording into LeRobot dataset format."""
+
+    def __init__(
+        self,
+        root: str,
+        repo_id: str,
+        fps: int,
+        task: str,
+        robot_type: str = "panda_gello",
+        camera_keys: tuple[str, ...] = ("wrist", "base"),
+    ):
+        from gello.data_utils.keyboard_interface import KBReset
+
+        self.kb_interface = KBReset()
+        self.task = task
+        self.camera_keys = camera_keys
+        self.dataset = LeRobotDataset.create(
+            repo_id=repo_id,
+            fps=fps,
+            features=self._build_features(camera_keys),
+            robot_type=robot_type,
+            root=Path(root).expanduser(),
+            use_videos=True,
+        )
+        self._recording = False
+
+        print("LeRobot save interface enabled. Use keyboard controls:")
+        print("  S: Start recording")
+        print("  Q: Stop recording")
+
+    def _build_features(self, camera_keys: tuple[str, ...]) -> Dict[str, Any]:
+        features: Dict[str, Any] = {
+            "observation.state": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
+            "action": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
+        }
+        for cam in camera_keys:
+            features[f"observation.images.{cam}"] = {
+                "dtype": "video",
+                "shape": (480, 640, 3),
+                "names": ["height", "width", "channel"],
+            }
+        return features
+
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
+        state = self.kb_interface.update()
+        if state == "start":
+            self._recording = True
+            print("Started recording episode into LeRobot dataset")
+        elif state == "save" and self._recording:
+            frame: Dict[str, Any] = {
+                "observation.state": np.asarray(obs["joint_positions"], dtype=np.float32),
+                "action": np.asarray(action, dtype=np.float32),
+                "task": self.task,
+            }
+            for cam in self.camera_keys:
+                key = f"{cam}_rgb"
+                if key in obs:
+                    frame[f"observation.images.{cam}"] = np.asarray(obs[key], dtype=np.uint8)
+            self.dataset.add_frame(frame)
+        elif state == "normal" and self._recording:
+            self.dataset.save_episode()
+            self._recording = False
+            print("Episode saved")
+        elif state == "quit":
+            if self._recording:
+                self.dataset.save_episode()
+                self._recording = False
+            self.dataset.finalize()
+            print("\nExiting.")
+            return "quit"
+        return None
 
 def run_control_loop(
     env: RobotEnv,
