@@ -3,7 +3,7 @@
 import datetime
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -155,7 +155,7 @@ class LeRobotSaveInterface:
         fps: int,
         task: str,
         robot_type: str = "panda_gello",
-        camera_keys: tuple[str, ...] = ("wrist", "base"),
+        camera_keys: Tuple[str, ...] = ("wrist", "base"),
     ):
         from gello.data_utils.keyboard_interface import KBReset
         try:
@@ -183,7 +183,7 @@ class LeRobotSaveInterface:
         print("  S: Start recording")
         print("  Q: Stop recording")
 
-    def _build_features(self, camera_keys: tuple[str, ...]) -> Dict[str, Any]:
+    def _build_features(self, camera_keys: Tuple[str, ...]) -> Dict[str, Any]:
         features: Dict[str, Any] = {
             "observation.state": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
             "action": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
