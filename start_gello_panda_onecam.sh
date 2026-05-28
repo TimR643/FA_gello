@@ -49,12 +49,10 @@ tmux send-keys -t $SESSION:3 "cd $PROJECT_DIR" C-m
 tmux send-keys -t $SESSION:3 "python -u experiments/launch_camera_single.py --hostname $HOST --port $WRIST_PORT --camera-id $WRIST_CAMERA_ID" C-m
 sleep 3
 
-# Fenster 4: ENV with direct LeRobot recording (wrist only)
+# Fenster 4: ENV mit direkter LeRobot-Aufzeichnung
 tmux new-window -t $SESSION:4 -n "env"
 tmux send-keys -t $SESSION:4 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:4 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:4 "cd $PROJECT_DIR" C-m
-tmux send-keys -t $SESSION:4 "python experiments/run_env.py --agent gello --hostname $HOST --robot_port $ROBOT_PORT --wrist_camera_port $WRIST_PORT --no-use-base-camera --use-save-interface --save-mode lerobot --lerobot-root $LEROBOT_ROOT --lerobot-repo-id $LEROBOT_REPO_ID --lerobot-fps $LEROBOT_FPS --lerobot-task \"$LEROBOT_TASK\" --lerobot-robot-type $LEROBOT_ROBOT_TYPE" C-m
-
-tmux select-window -t $SESSION:4
-tmux attach-session -t $SESSION
+# HIER --hz 10 HINZUFÜGEN, DAMIT UMWELT UND AUFZEICHNUNG SYNCHRON LAUFEN
+tmux send-keys -t $SESSION:4 "python experiments/run_env.py --agent gello --hostname $HOST --robot_port $ROBOT_PORT --wrist_camera_port $WRIST_PORT --no-use-base-camera --use-save-interface --save-mode lerobot --lerobot-root $LEROBOT_ROOT --lerobot-repo-id $LEROBOT_REPO_ID --lerobot-fps $LEROBOT_FPS --lerobot-task \"$LEROBOT_TASK\" --lerobot-robot-type $LEROBOT_ROBOT_TYPE --hz 10" C-m
