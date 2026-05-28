@@ -1,0 +1,174 @@
+v1.16.0.0 (2025-02-28)
+======================
+    - added - support for D400e Mainboard v1.3
+    - added - support for Marvell 88E1510P ethernet PHY
+    - added - support for temperature-humidity sensor SHT40
+    - fixed - frame triggering with metadata enabled
+    - fixed - trigger type selector not updating on RGB sensor
+    - fixed - corrupted depth data in some cases when RGB/depth synchronization is active
+
+v1.15.0.0 (2023-07-26)
+======================
+    - added - metadata for Depth and Infrared streams (MetadataControl)
+    - fixed - the occasional consecutive temperature readings from the same DeviceTemperatureSelector 
+                were returning incorrect values
+    - fixed - overall stability improvement
+
+v1.14.4.0 (2023-01-15)
+=====================
+    - fixed - camera might become unresponsive in certain cases when DHCP IP Configuration mode is enabled
+
+v1.14.3.0 (2022-12-01)
+=====================
+    - fixed - camera might hang or reconfigure after cold start
+
+v1.14.2.0 (2022-10-28)
+======================
+    - fixed - camera might become unresponsive after excessive packet resend requests
+
+v1.14.0.0 (2022-09-15)
+======================
+    - added - support for Hardware ID 1.2 (see D400e PCN 202208-01)
+
+v1.13.0.0 (2022-07-15)
+======================
+    - added - support for GigEVision Extended Status Codes
+    - added - support for ISP firmware update
+    - fixed - premature packet resend with status "Unavailable"
+    - fixed - GVSP BlockID overlaps to 0
+    - fixed - occasional corrupted image on packet resend
+    - fixed - overall stability improvement
+    - changed - Intel D4 ASIC firmware 5.13.0.50
+
+v1.12.0.0 (2021-10-08)
+======================
+    - added - support for RGB module LED toggle
+    - added - added feature GevSCSP (StreamChannelSourcePort)
+    - fixed - improved camera firmware update procedure
+    - fixed - occasional "frame did not arrive" issue for stereo sensor
+    - fixed - external event sent immediately after start of acquisition causes wrong camera behavior
+    - changed - SourceControlSelector replaced with SourceSelector
+
+v1.11.1.0 (2021-06-10)
+======================
+    - fixed - camera not responsive on link speed change
+
+v1.11.0.0 (2021-01-15)
+======================
+    - added - support for Intel D4 5.12.7.100 firmware
+    - added - IMU support
+    - added - IMU calibration support
+    - added - GenLock support
+    - added - External Event Burst Mode 
+
+v1.10.0.0 (2020-10-13)
+======================
+    - added - RAW16 stream support from RGB sensor
+    - fixed - camera might become non-responsive if burst of ethernet packets is
+              received at initialization stage
+
+v1.9.0.0 (2020-09-24)
+=====================
+    - added - input line debouncer support ("LineDebouncerTime" feature) 
+    - added - device diagnostic support ("DebugInformation" feature)
+    - fixed - external event RGB/Stereo loss of synchronization within specific 
+                trigger window
+
+v1.8.0.0 (2020-06-30)
+=====================
+    - added - RGB & Depth synchronization
+    - added - UserOutputValue on Digital Output
+    - fixed - minimum RGB manual exposure time
+    - fixed - software trigger generates frames for inactive streams
+
+v1.7.0.0 (2020-03-25)
+=====================
+    - added - software trigger feature
+    - fixed - corrupted packets at the end of image
+    - fixed - RGB sensor was not recognized by DynamicCalibrator tool
+    - fixed - external event mode not outputting VSync signal
+
+v1.6.0.0 (2020-02-28)
+=====================
+    - added - external hardware trigger
+    - fixed - wrong payload size reported while switching regions
+    - fixed - amount of packet resends on packet resend unavailable
+    - fixed - camera reconfiguration on excessive packet resend requests
+    - fixed - general camera stability (start/stop, switching regions)
+    - fixed - maximum unavailable packet resend ID limited to trailerID
+    - changed - laser power increment value from 30 to 1
+
+v1.5.1.0 (2019-12-19)
+=====================
+    - fixed - non responsive camera on fast and frequent change of camera parameters 
+    - fixed - actual inter packet delay value was lower than set via GevSCPD feature
+    - fixed - permanent IP address was not verified before assigned to network interface
+    - fixed - TLParamsLocked feature handled/cleared on application disconnect
+
+v1.5.0.0 (2019-11-28)
+=====================
+    - added - support for multi-camera synchronization
+    - added - RY8_LY8 stream (8bit rectified image from Left and Right sensors)
+    - added - Y8 stream (8bit rectified image from Left sensor)
+    - fixed - camera xml compatible with defined xml schema (XSD)
+    - changed - depth exposure units from ms to us
+
+v1.4.1.0 (2019-11-05)
+=====================
+    - added - temperature readout support ("DeviceTemperatureSelector" feature)
+
+v1.4.0.0 (2019-10-30)
+=====================
+    - added - additional resolution support ("Resolution" feature)
+    - added - additional frame rate support ("FrameRate" feature)
+    - added - auto exposure ROI for RGB stream ("RGB_ExposureAutoROI*" feature)
+    - fixed - wrong destination port while sending out packet resend
+    - changed - RGB stream pixel format from YUV422p to YUV422
+
+v1.3.4.0 (2019-08-24)
+=====================
+    - fixed - "RGBCamera" category feature setup lost while changing 
+                "SourceControlSelector" 
+
+v1.3.3.0 (2019-08-22)
+=====================
+    - fixed - no Depth stream after device reset ("DeviceReset")
+
+v1.3.2.0 (2019-08-22)
+=====================
+    - fixed - device reset feature ("DeviceReset")
+
+v1.3.1.0 (2019-08-20)
+=====================
+    - fixed - procedure for storing calibration tables
+
+v1.3.0.0 (2019-08-14)
+=====================
+    - added - multi camera synchronization
+    - added - calibration streams (Depth and RGB)
+    - added - stream time-stamping control ("GevTimestampControl" feature)
+    - added - IP address configurations (LLA, DHCP, ForceIP, PermanentIP)
+    - added - fire test packet ("GevSCPSFireTestPacket" feature)
+    - added - packet resend for multi stream (pre-alpha release)
+    - fixed - source mac address value in ethernet header field
+    - changed - AcquisitionStart command per SourceControlSelector
+    - changed - TLParamsLocked feature per SourceControlSelector
+
+v1.2.0.0 (2019-07-03)
+=====================
+    - added - access to HWmonitor commands through Genicam
+
+v1.1.0.0 (2019-06-18)
+=====================
+    - added - video profile 1280x720@30fps (both Depth and Color stream)
+    - added - IR projector functionality
+    - added - jumbo packet support ("GevSCPSPacketSize" feature)
+    - added - inter-packet delay support ("GevSCPD" feature)
+    - added - stream channel selector ("GevStreamChannelSelector" feature)
+    - fixed - stream stability
+    - fixed - camera boot stability and boot speed
+    - fixed - feature "AcquisitionMode" missing
+
+v1.0.0.0 (2019-04-29)
+=====================
+    - initial firmware
