@@ -48,7 +48,14 @@ def main(args: Args) -> None:
                 recording = True
                 frame_count = 0
                 print(f"Started streamed episode at {message.get('timestamp')}")
-            elif message_type == "frame" and recording:
+            elif message_type == "frame":
+                if not recording:
+                    recording = True
+                    frame_count = 0
+                    print(
+                        "Received frame before start marker; "
+                        "starting streamed episode implicitly."
+                    )
                 writer.add_frame(message["obs"], message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
