@@ -10,6 +10,45 @@ from gello.robots.robot import Robot
 DEFAULT_ROBOT_PORT = 6000
 
 
+def _pack_numpy(value: Any) -> Any:
+    """Convert NumPy values to pickle-stable Python containers."""
+    if isinstance(value, np.ndarray):
+        contiguous = np.ascontiguousarray(value)
+        return {
+            "__ndarray__": True,
+            "dtype": str(contiguous.dtype),
+            "shape": contiguous.shape,
+            "data": contiguous.tobytes(),
+        }
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _pack_numpy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_pack_numpy(item) for item in value)
+    return value
+
+
+def _unpack_numpy(value: Any) -> Any:
+    """Reconstruct NumPy values from pickle-stable Python containers."""
+    if isinstance(value, dict):
+        if value.get("__ndarray__") is True:
+            array = np.frombuffer(value["data"], dtype=np.dtype(value["dtype"]))
+            return array.reshape(value["shape"]).copy()
+        return {key: _unpack_numpy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_unpack_numpy(item) for item in value)
+    return value
+
+
+def _dumps_message(value: Any) -> bytes:
+    return pickle.dumps(_pack_numpy(value), protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _loads_message(message: bytes) -> Any:
+    return _unpack_numpy(pickle.loads(message))
+
+
 class ZMQServerRobot:
     def __init__(
         self,
@@ -34,7 +73,7 @@ class ZMQServerRobot:
             try:
                 # Wait for next request from client
                 message = self._socket.recv()
-                request = pickle.loads(message)
+                request = _loads_message(message)
 
                 # Call the appropriate method based on the request
                 method = request.get("method")
@@ -55,7 +94,7 @@ class ZMQServerRobot:
                         f"Invalid method: {method}, {args, result}"
                     )
 
-                self._socket.send(pickle.dumps(result))
+                self._socket.send(_dumps_message(result))
             except zmq.Again:
                 # Timeout occurred - don't spam the console
                 pass
@@ -80,9 +119,9 @@ class ZMQClientRobot(Robot):
             int: The number of joints in the robot.
         """
         request = {"method": "num_dofs"}
-        send_message = pickle.dumps(request)
+        send_message = _dumps_message(request)
         self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
+        result = _loads_message(self._socket.recv())
         return result
 
     def get_joint_state(self) -> np.ndarray:
@@ -92,10 +131,10 @@ class ZMQClientRobot(Robot):
             T: The current state of the leader robot.
         """
         request = {"method": "get_joint_state"}
-        send_message = pickle.dumps(request)
+        send_message = _dumps_message(request)
         try:
             self._socket.send(send_message)
-            result = pickle.loads(self._socket.recv())
+            result = _loads_message(self._socket.recv())
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(result["error"])
             return result
@@ -112,9 +151,9 @@ class ZMQClientRobot(Robot):
             "method": "command_joint_state",
             "args": {"joint_state": joint_state},
         }
-        send_message = pickle.dumps(request)
+        send_message = _dumps_message(request)
         self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
+        result = _loads_message(self._socket.recv())
         return result
 
     def get_observations(self) -> Dict[str, np.ndarray]:
@@ -124,10 +163,10 @@ class ZMQClientRobot(Robot):
             Dict[str, np.ndarray]: The current observations of the leader robot.
         """
         request = {"method": "get_observations"}
-        send_message = pickle.dumps(request)
+        send_message = _dumps_message(request)
         try:
             self._socket.send(send_message)
-            result = pickle.loads(self._socket.recv())
+            result = _loads_message(self._socket.recv())
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(result["error"])
             return result
