@@ -188,7 +188,12 @@ class LeRobotSaveInterface:
         elif "video_encoding_batch_size" in create_params:
             create_kwargs["video_encoding_batch_size"] = batch_encoding_size
 
-        self.dataset = LeRobotDataset.create(**create_kwargs)
+        dataset_root = create_kwargs["root"]
+        if dataset_root.exists():
+            print(f"Existing LeRobot dataset found, resuming: {dataset_root}")
+            self.dataset = LeRobotDataset.resume(repo_id=repo_id, root=dataset_root)
+        else:
+            self.dataset = LeRobotDataset.create(**create_kwargs)
         self._recording = False
 
         print("LeRobot save interface enabled. Video storage is enabled.")
