@@ -189,10 +189,19 @@ class LeRobotSaveInterface:
             create_kwargs["video_encoding_batch_size"] = batch_encoding_size
 
         dataset_root = create_kwargs["root"]
-        if dataset_root.exists():
+        dataset_info_path = dataset_root / "meta" / "info.json"
+        if dataset_info_path.exists():
             print(f"Existing LeRobot dataset found, resuming: {dataset_root}")
             self.dataset = LeRobotDataset.resume(repo_id=repo_id, root=dataset_root)
         else:
+            if dataset_root.exists():
+                if any(dataset_root.iterdir()):
+                    raise FileExistsError(
+                        f"{dataset_root} exists but is not a valid LeRobot dataset "
+                        f"because {dataset_info_path} is missing. Use a new "
+                        "--lerobot-root or remove the incomplete directory."
+                    )
+                dataset_root.rmdir()
             self.dataset = LeRobotDataset.create(**create_kwargs)
         self._recording = False
 
