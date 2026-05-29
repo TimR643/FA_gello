@@ -146,8 +146,8 @@ JOINT_NAMES = [
 ]
 
 
-class LeRobotSaveInterface:
-    """Keyboard-based direct recording into LeRobot dataset format."""
+class LeRobotDatasetWriter:
+    """Write observations and actions directly to a LeRobot video dataset."""
 
     def __init__(
         self,
@@ -160,10 +160,8 @@ class LeRobotSaveInterface:
         streaming_encoding: bool = True,
         batch_encoding_size: int = 1,
     ):
-        from gello.data_utils.keyboard_interface import KBReset
         from lerobot.datasets import LeRobotDataset
 
-        self.kb_interface = KBReset()
         self.task = task
         self.camera_keys = camera_keys
         create_kwargs = {
@@ -203,18 +201,21 @@ class LeRobotSaveInterface:
                     )
                 dataset_root.rmdir()
             self.dataset = LeRobotDataset.create(**create_kwargs)
-        self._recording = False
 
-        print("LeRobot save interface enabled. Video storage is enabled.")
+        print("LeRobot dataset writer enabled. Video storage is enabled.")
         if streaming_encoding:
-            print("Streaming video encoding requested: frames are encoded during capture when supported by your LeRobot version.")
-        print("Use keyboard controls:")
-        print("  S: Start recording")
-        print("  Q: Stop recording")
+            print(
+                "Streaming video encoding requested: frames are encoded during "
+                "capture when supported by your LeRobot version."
+            )
 
     def _build_features(self, camera_keys: Tuple[str, ...]) -> Dict[str, Any]:
         features: Dict[str, Any] = {
-            "observation.state": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
+            "observation.state": {
+                "dtype": "float32",
+                "shape": (8,),
+                "names": JOINT_NAMES,
+            },
             "action": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
         }
         for cam in camera_keys:
@@ -225,31 +226,130 @@ class LeRobotSaveInterface:
             }
         return features
 
+    def add_frame(self, obs: Dict[str, Any], action: np.ndarray) -> None:
+        frame: Dict[str, Any] = {
+            "observation.state": np.asarray(obs["joint_positions"], dtype=np.float32),
+            "action": np.asarray(action, dtype=np.float32),
+            "task": self.task,
+        }
+        for cam in self.camera_keys:
+            key = f"{cam}_rgb"
+            if key in obs:
+                frame[f"observation.images.{cam}"] = np.asarray(
+                    obs[key], dtype=np.uint8
+                )
+        self.dataset.add_frame(frame)
+
+    def save_episode(self) -> None:
+        self.dataset.save_episode()
+
+    def finalize(self) -> None:
+        self.dataset.finalize()
+
+
+class LeRobotSaveInterface:
+    """Keyboard-based direct recording into LeRobot dataset format."""
+
+    def __init__(
+        self,
+        root: str,
+        repo_id: str,
+        fps: int,
+        task: str,
+        robot_type: str = "panda_gello",
+        camera_keys: Tuple[str, ...] = ("wrist", "base"),
+        streaming_encoding: bool = True,
+        batch_encoding_size: int = 1,
+    ):
+        from gello.data_utils.keyboard_interface import KBReset
+
+        self.kb_interface = KBReset()
+        self.writer = LeRobotDatasetWriter(
+            root=root,
+            repo_id=repo_id,
+            fps=fps,
+            task=task,
+            robot_type=robot_type,
+            camera_keys=camera_keys,
+            streaming_encoding=streaming_encoding,
+            batch_encoding_size=batch_encoding_size,
+        )
+        self._recording = False
+
+        print("Use keyboard controls:")
+        print("  S: Start recording")
+        print("  Q: Stop recording")
+
     def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
         state = self.kb_interface.update()
         if state == "start":
             self._recording = True
             print("Started recording episode into LeRobot dataset")
         elif state == "save" and self._recording:
-            frame: Dict[str, Any] = {
-                "observation.state": np.asarray(obs["joint_positions"], dtype=np.float32),
-                "action": np.asarray(action, dtype=np.float32),
-                "task": self.task,
-            }
-            for cam in self.camera_keys:
-                key = f"{cam}_rgb"
-                if key in obs:
-                    frame[f"observation.images.{cam}"] = np.asarray(obs[key], dtype=np.uint8)
-            self.dataset.add_frame(frame)
+            self.writer.add_frame(obs, action)
         elif state == "normal" and self._recording:
-            self.dataset.save_episode()
+            self.writer.save_episode()
             self._recording = False
             print("Episode saved")
         elif state == "quit":
             if self._recording:
-                self.dataset.save_episode()
+                self.writer.save_episode()
                 self._recording = False
-            self.dataset.finalize()
+            self.writer.finalize()
+            print("\nExiting.")
+            return "quit"
+        return None
+
+
+class RecordingStreamInterface:
+    """Keyboard-controlled non-blocking recording stream publisher."""
+
+    def __init__(self, host: str, port: int, send_hwm: int = 2):
+        from gello.data_utils.keyboard_interface import KBReset
+        from gello.zmq_core.recording_node import ZMQRecordingPublisher
+
+        self.kb_interface = KBReset()
+        self.publisher = ZMQRecordingPublisher(host=host, port=port, send_hwm=send_hwm)
+        self._recording = False
+        self._dropped_frames = 0
+
+        print("Recording stream interface enabled. Use keyboard controls:")
+        print("  S: Start streaming frames to the HPC recorder")
+        print("  Q: Stop current episode")
+
+    def _send(self, message: Dict[str, Any]) -> None:
+        if not self.publisher.send(message) and message.get("type") == "frame":
+            self._dropped_frames += 1
+            if self._dropped_frames % 100 == 1:
+                print(
+                    "Recording stream queue full; dropping frames to keep robot "
+                    f"control real-time safe (dropped={self._dropped_frames})."
+                )
+
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
+        state = self.kb_interface.update()
+        if state == "start":
+            self._recording = True
+            self._send({"type": "start", "timestamp": datetime.datetime.now().isoformat()})
+            print("Started streaming recording episode")
+        elif state == "save" and self._recording:
+            self._send(
+                {
+                    "type": "frame",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "obs": obs,
+                    "action": action,
+                }
+            )
+        elif state == "normal" and self._recording:
+            self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+            self._recording = False
+            print("Stopped streaming recording episode")
+        elif state == "quit":
+            if self._recording:
+                self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+                self._recording = False
+            self._send({"type": "quit", "timestamp": datetime.datetime.now().isoformat()})
             print("\nExiting.")
             return "quit"
         return None

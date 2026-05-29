@@ -40,6 +40,9 @@ class Args:
     use_save_interface: bool = False
     save_mode: str = "pkl"
     data_dir: str = "~/bc_data"
+    record_stream_host: str = "127.0.0.1"
+    record_stream_port: int = 7000
+    record_stream_hwm: int = 2
     lerobot_root: str = "~/lerobot_data"
     lerobot_repo_id: str = "local/panda_gello"
     lerobot_fps: int = 10
@@ -249,7 +252,12 @@ def main(args):
             )
         exit()
 
-    from gello.utils.control_utils import LeRobotSaveInterface, SaveInterface, run_control_loop
+    from gello.utils.control_utils import (
+        LeRobotSaveInterface,
+        RecordingStreamInterface,
+        SaveInterface,
+        run_control_loop,
+    )
 
     save_interface = None
     if args.use_save_interface:
@@ -263,6 +271,12 @@ def main(args):
                 camera_keys=("wrist", "base") if args.use_base_camera else ("wrist",),
                 streaming_encoding=args.lerobot_streaming_encoding,
                 batch_encoding_size=args.lerobot_batch_encoding_size,
+            )
+        elif args.save_mode == "recording_stream":
+            save_interface = RecordingStreamInterface(
+                host=args.record_stream_host,
+                port=args.record_stream_port,
+                send_hwm=args.record_stream_hwm,
             )
         else:
             save_interface = SaveInterface(
