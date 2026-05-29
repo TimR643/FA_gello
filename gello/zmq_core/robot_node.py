@@ -1,4 +1,3 @@
-import pickle
 import threading
 from typing import Any, Dict
 
@@ -6,8 +5,10 @@ import numpy as np
 import zmq
 
 from gello.robots.robot import Robot
+from gello.zmq_core.serialization import dumps_message, loads_message
 
 DEFAULT_ROBOT_PORT = 6000
+
 
 
 class ZMQServerRobot:
@@ -34,7 +35,7 @@ class ZMQServerRobot:
             try:
                 # Wait for next request from client
                 message = self._socket.recv()
-                request = pickle.loads(message)
+                request = loads_message(message)
 
                 # Call the appropriate method based on the request
                 method = request.get("method")
@@ -55,7 +56,7 @@ class ZMQServerRobot:
                         f"Invalid method: {method}, {args, result}"
                     )
 
-                self._socket.send(pickle.dumps(result))
+                self._socket.send(dumps_message(result))
             except zmq.Again:
                 # Timeout occurred - don't spam the console
                 pass
@@ -80,9 +81,9 @@ class ZMQClientRobot(Robot):
             int: The number of joints in the robot.
         """
         request = {"method": "num_dofs"}
-        send_message = pickle.dumps(request)
+        send_message = dumps_message(request)
         self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
+        result = loads_message(self._socket.recv())
         return result
 
     def get_joint_state(self) -> np.ndarray:
@@ -92,10 +93,10 @@ class ZMQClientRobot(Robot):
             T: The current state of the leader robot.
         """
         request = {"method": "get_joint_state"}
-        send_message = pickle.dumps(request)
+        send_message = dumps_message(request)
         try:
             self._socket.send(send_message)
-            result = pickle.loads(self._socket.recv())
+            result = loads_message(self._socket.recv())
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(result["error"])
             return result
@@ -112,9 +113,9 @@ class ZMQClientRobot(Robot):
             "method": "command_joint_state",
             "args": {"joint_state": joint_state},
         }
-        send_message = pickle.dumps(request)
+        send_message = dumps_message(request)
         self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
+        result = loads_message(self._socket.recv())
         return result
 
     def get_observations(self) -> Dict[str, np.ndarray]:
@@ -124,10 +125,10 @@ class ZMQClientRobot(Robot):
             Dict[str, np.ndarray]: The current observations of the leader robot.
         """
         request = {"method": "get_observations"}
-        send_message = pickle.dumps(request)
+        send_message = dumps_message(request)
         try:
             self._socket.send(send_message)
-            result = pickle.loads(self._socket.recv())
+            result = loads_message(self._socket.recv())
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(result["error"])
             return result

@@ -1,9 +1,10 @@
 """Shared utilities for robot control loops."""
 
 import datetime
+import inspect
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -131,6 +132,227 @@ class SaveInterface:
 
         return None
 
+
+
+JOINT_NAMES = [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+    "gripper",
+]
+
+
+class LeRobotDatasetWriter:
+    """Write observations and actions directly to a LeRobot video dataset."""
+
+    def __init__(
+        self,
+        root: str,
+        repo_id: str,
+        fps: int,
+        task: str,
+        robot_type: str = "panda_gello",
+        camera_keys: Tuple[str, ...] = ("wrist", "base"),
+        streaming_encoding: bool = True,
+        batch_encoding_size: int = 1,
+    ):
+        from lerobot.datasets import LeRobotDataset
+
+        self.task = task
+        self.camera_keys = camera_keys
+        create_kwargs = {
+            "repo_id": repo_id,
+            "fps": fps,
+            "features": self._build_features(camera_keys),
+            "robot_type": robot_type,
+            "root": Path(root).expanduser(),
+            "use_videos": True,
+        }
+        create_params = inspect.signature(LeRobotDataset.create).parameters
+        if "streaming_encoding" in create_params:
+            create_kwargs["streaming_encoding"] = streaming_encoding
+        elif streaming_encoding:
+            print(
+                "Warning: installed LeRobot does not support streaming_encoding; "
+                "videos will be encoded when episodes are saved."
+            )
+
+        if "batch_encoding_size" in create_params:
+            create_kwargs["batch_encoding_size"] = batch_encoding_size
+        elif "video_encoding_batch_size" in create_params:
+            create_kwargs["video_encoding_batch_size"] = batch_encoding_size
+
+        dataset_root = create_kwargs["root"]
+        dataset_info_path = dataset_root / "meta" / "info.json"
+        if dataset_info_path.exists():
+            print(f"Existing LeRobot dataset found, resuming: {dataset_root}")
+            self.dataset = LeRobotDataset.resume(repo_id=repo_id, root=dataset_root)
+        else:
+            if dataset_root.exists():
+                if any(dataset_root.iterdir()):
+                    raise FileExistsError(
+                        f"{dataset_root} exists but is not a valid LeRobot dataset "
+                        f"because {dataset_info_path} is missing. Use a new "
+                        "--lerobot-root or remove the incomplete directory."
+                    )
+                dataset_root.rmdir()
+            self.dataset = LeRobotDataset.create(**create_kwargs)
+
+        print("LeRobot dataset writer enabled. Video storage is enabled.")
+        if streaming_encoding:
+            print(
+                "Streaming video encoding requested: frames are encoded during "
+                "capture when supported by your LeRobot version."
+            )
+
+    def _build_features(self, camera_keys: Tuple[str, ...]) -> Dict[str, Any]:
+        features: Dict[str, Any] = {
+            "observation.state": {
+                "dtype": "float32",
+                "shape": (8,),
+                "names": JOINT_NAMES,
+            },
+            "action": {"dtype": "float32", "shape": (8,), "names": JOINT_NAMES},
+        }
+        for cam in camera_keys:
+            features[f"observation.images.{cam}"] = {
+                "dtype": "video",
+                "shape": (480, 640, 3),
+                "names": ["height", "width", "channel"],
+            }
+        return features
+
+    def add_frame(self, obs: Dict[str, Any], action: np.ndarray) -> None:
+        frame: Dict[str, Any] = {
+            "observation.state": np.asarray(obs["joint_positions"], dtype=np.float32),
+            "action": np.asarray(action, dtype=np.float32),
+            "task": self.task,
+        }
+        for cam in self.camera_keys:
+            key = f"{cam}_rgb"
+            if key in obs:
+                frame[f"observation.images.{cam}"] = np.asarray(
+                    obs[key], dtype=np.uint8
+                )
+        self.dataset.add_frame(frame)
+
+    def save_episode(self) -> None:
+        self.dataset.save_episode()
+
+    def finalize(self) -> None:
+        self.dataset.finalize()
+
+
+class LeRobotSaveInterface:
+    """Keyboard-based direct recording into LeRobot dataset format."""
+
+    def __init__(
+        self,
+        root: str,
+        repo_id: str,
+        fps: int,
+        task: str,
+        robot_type: str = "panda_gello",
+        camera_keys: Tuple[str, ...] = ("wrist", "base"),
+        streaming_encoding: bool = True,
+        batch_encoding_size: int = 1,
+    ):
+        from gello.data_utils.keyboard_interface import KBReset
+
+        self.kb_interface = KBReset()
+        self.writer = LeRobotDatasetWriter(
+            root=root,
+            repo_id=repo_id,
+            fps=fps,
+            task=task,
+            robot_type=robot_type,
+            camera_keys=camera_keys,
+            streaming_encoding=streaming_encoding,
+            batch_encoding_size=batch_encoding_size,
+        )
+        self._recording = False
+
+        print("Use keyboard controls:")
+        print("  S: Start recording")
+        print("  Q: Stop recording")
+
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
+        state = self.kb_interface.update()
+        if state == "start":
+            self._recording = True
+            print("Started recording episode into LeRobot dataset")
+        elif state == "save" and self._recording:
+            self.writer.add_frame(obs, action)
+        elif state == "normal" and self._recording:
+            self.writer.save_episode()
+            self._recording = False
+            print("Episode saved")
+        elif state == "quit":
+            if self._recording:
+                self.writer.save_episode()
+                self._recording = False
+            self.writer.finalize()
+            print("\nExiting.")
+            return "quit"
+        return None
+
+
+class RecordingStreamInterface:
+    """Keyboard-controlled non-blocking recording stream publisher."""
+
+    def __init__(self, host: str, port: int, send_hwm: int = 2):
+        from gello.data_utils.keyboard_interface import KBReset
+        from gello.zmq_core.recording_node import ZMQRecordingPublisher
+
+        self.kb_interface = KBReset()
+        self.publisher = ZMQRecordingPublisher(host=host, port=port, send_hwm=send_hwm)
+        self._recording = False
+        self._dropped_frames = 0
+
+        print("Recording stream interface enabled. Use keyboard controls:")
+        print("  S: Start streaming frames to the HPC recorder")
+        print("  Q: Stop current episode")
+
+    def _send(self, message: Dict[str, Any]) -> None:
+        if not self.publisher.send(message) and message.get("type") == "frame":
+            self._dropped_frames += 1
+            if self._dropped_frames % 100 == 1:
+                print(
+                    "Recording stream queue full; dropping frames to keep robot "
+                    f"control real-time safe (dropped={self._dropped_frames})."
+                )
+
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
+        state = self.kb_interface.update()
+        if state == "start":
+            self._recording = True
+            self._send({"type": "start", "timestamp": datetime.datetime.now().isoformat()})
+            print("Started streaming recording episode")
+        elif state == "save" and self._recording:
+            self._send(
+                {
+                    "type": "frame",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "obs": obs,
+                    "action": action,
+                }
+            )
+        elif state == "normal" and self._recording:
+            self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+            self._recording = False
+            print("Stopped streaming recording episode")
+        elif state == "quit":
+            if self._recording:
+                self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+                self._recording = False
+            self._send({"type": "quit", "timestamp": datetime.datetime.now().isoformat()})
+            print("\nExiting.")
+            return "quit"
+        return None
 
 def run_control_loop(
     env: RobotEnv,
