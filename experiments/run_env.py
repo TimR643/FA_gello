@@ -27,7 +27,10 @@ class Args:
     robot_port: int = 6001
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
+    use_base_camera: bool = True
     hostname: str = "127.0.0.1"
+    robot_hostname: Optional[str] = None
+    camera_hostname: Optional[str] = None
     robot_type: str = None  # only needed for quest agent or spacemouse agent
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
@@ -35,7 +38,15 @@ class Args:
     gello_port: Optional[str] = None
     mock: bool = False
     use_save_interface: bool = False
+    save_mode: str = "pkl"
     data_dir: str = "~/bc_data"
+    lerobot_root: str = "~/lerobot_data"
+    lerobot_repo_id: str = "local/panda_gello"
+    lerobot_fps: int = 10
+    lerobot_streaming_encoding: bool = True
+    lerobot_batch_encoding_size: int = 1
+    lerobot_task: str = "Teleoperate the Panda robot with GELLO."
+    lerobot_robot_type: str = "panda_gello"
     bimanual: bool = False
     verbose: bool = False
 
@@ -49,12 +60,18 @@ def main(args):
         robot_client = PrintRobot(8, dont_print=True)
         camera_clients = {}
     else:
+        robot_host = args.robot_hostname or args.hostname
+        camera_host = args.camera_hostname or args.hostname
+
         camera_clients = {
             # you can optionally add camera nodes here for imitation learning purposes
-            "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=args.hostname),
-            "base": ZMQClientCamera(port=args.base_camera_port, host=args.hostname),
+            "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=camera_host),
         }
-        robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
+        if args.use_base_camera:
+            camera_clients["base"] = ZMQClientCamera(
+                port=args.base_camera_port, host=camera_host
+            )
+        robot_client = ZMQClientRobot(port=args.robot_port, host=robot_host)
     env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
 
     agent_cfg = {}
@@ -232,13 +249,25 @@ def main(args):
             )
         exit()
 
-    from gello.utils.control_utils import SaveInterface, run_control_loop
+    from gello.utils.control_utils import LeRobotSaveInterface, SaveInterface, run_control_loop
 
     save_interface = None
     if args.use_save_interface:
-        save_interface = SaveInterface(
-            data_dir=args.data_dir, agent_name=args.agent, expand_user=True
-        )
+        if args.save_mode == "lerobot":
+            save_interface = LeRobotSaveInterface(
+                root=args.lerobot_root,
+                repo_id=args.lerobot_repo_id,
+                fps=args.lerobot_fps,
+                task=args.lerobot_task,
+                robot_type=args.lerobot_robot_type,
+                camera_keys=("wrist", "base") if args.use_base_camera else ("wrist",),
+                streaming_encoding=args.lerobot_streaming_encoding,
+                batch_encoding_size=args.lerobot_batch_encoding_size,
+            )
+        else:
+            save_interface = SaveInterface(
+                data_dir=args.data_dir, agent_name=args.agent, expand_user=True
+            )
 
     run_control_loop(env, agent, save_interface, use_colors=True)
 

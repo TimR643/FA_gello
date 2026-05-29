@@ -1,9 +1,19 @@
 #!/bin/bash
 
-SESSION="gello_panda"
+SESSION="gello_panda_onecam_lerobot"
+PROJECT_DIR="~/gello_software"
+HOST="127.0.0.1"
+ROBOT_PORT=6001
+WRIST_PORT=5000
+WRIST_CAMERA_ID="6CD1460304A5"
+
+LEROBOT_ROOT="~/lerobot_data"
+LEROBOT_REPO_ID="local/panda_gello_wrist"
+LEROBOT_FPS=10
+LEROBOT_TASK="Teleoperate Panda with GELLO (wrist only)."
+LEROBOT_ROBOT_TYPE="panda_gello"
 
 tmux kill-session -t $SESSION 2>/dev/null
-
 source ~/miniconda3/etc/profile.d/conda.sh
 
 tmux new-session -d -s $SESSION
@@ -14,7 +24,6 @@ tmux send-keys -t $SESSION:0 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:0 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:0 "export HYDRA_FULL_ERROR=1" C-m
 tmux send-keys -t $SESSION:0 "launch_robot.py robot_client=franka_hardware" C-m
-
 sleep 8
 
 # Fenster 1: Gripper
@@ -22,34 +31,30 @@ tmux new-window -t $SESSION:1 -n "gripper"
 tmux send-keys -t $SESSION:1 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:1 "conda activate polymetis" C-m
 tmux send-keys -t $SESSION:1 "launch_gripper.py gripper=franka_hand" C-m
-
 sleep 5
 
-# Fenster 2: Nodes
+# Fenster 2: Robot ZMQ Node
 tmux new-window -t $SESSION:2 -n "nodes"
 tmux send-keys -t $SESSION:2 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:2 "conda activate polymetis" C-m
-tmux send-keys -t $SESSION:2 "cd ~/gello_software" C-m
-tmux send-keys -t $SESSION:2 "python experiments/launch_nodes.py --robot panda --robot-ip 127.0.0.1" C-m
-
+tmux send-keys -t $SESSION:2 "cd $PROJECT_DIR" C-m
+tmux send-keys -t $SESSION:2 "python experiments/launch_nodes.py --robot panda --hostname $HOST --robot_port $ROBOT_PORT --robot-ip 127.0.0.1" C-m
 sleep 3
 
-# Fenster 3: Wrist Camera / FRAMOS D435e -> onecam 
+# Fenster 3: Wrist Camera ZMQ Node
 tmux new-window -t $SESSION:3 -n "camera_wrist"
 tmux send-keys -t $SESSION:3 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
 tmux send-keys -t $SESSION:3 "conda activate polymetis" C-m
-tmux send-keys -t $SESSION:3 "cd ~/gello_software" C-m
-tmux send-keys -t $SESSION:3 "python -u experiments/launch_camera_single.py --hostname 127.0.0.1 --port 5000 --camera-id 6CD1460304A5" C-m
+tmux send-keys -t $SESSION:3 "cd $PROJECT_DIR" C-m
+tmux send-keys -t $SESSION:3 "python -u experiments/launch_camera_single.py --hostname $HOST --port $WRIST_PORT --camera-id $WRIST_CAMERA_ID" C-m
+sleep 3
 
-sleep 5
+# Fenster 4: ENV with direct LeRobot recording (wrist only)
+tmux new-window -t $SESSION:4 -n "env"
+tmux send-keys -t $SESSION:4 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
+tmux send-keys -t $SESSION:4 "conda activate polymetis" C-m
+tmux send-keys -t $SESSION:4 "cd $PROJECT_DIR" C-m
+tmux send-keys -t $SESSION:4 "python experiments/run_env.py --agent gello --hostname $HOST --robot_port $ROBOT_PORT --wrist_camera_port $WRIST_PORT --no-use-base-camera --use-save-interface --save-mode lerobot --lerobot-root $LEROBOT_ROOT --lerobot-repo-id $LEROBOT_REPO_ID --lerobot-fps $LEROBOT_FPS --lerobot-streaming-encoding --lerobot-batch-encoding-size 1 --lerobot-task \"$LEROBOT_TASK\" --lerobot-robot-type $LEROBOT_ROBOT_TYPE" C-m
 
-# Fenster 4: Env nur vorbereiten
-tmux new-window -t $SESSION:5 -n "env"
-tmux send-keys -t $SESSION:5 "source ~/miniconda3/etc/profile.d/conda.sh" C-m
-tmux send-keys -t $SESSION:5 "conda activate polymetis" C-m
-tmux send-keys -t $SESSION:5 "cd ~/gello_software" C-m
-tmux send-keys -t $SESSION:5 "python experiments/run_env.py --agent gello --hostname 127.0.0.1 --wrist-camera-port 5000 --use-save-interface
-
-
-tmux select-window -t $SESSION:5
+tmux select-window -t $SESSION:4
 tmux attach-session -t $SESSION
