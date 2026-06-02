@@ -50,10 +50,10 @@ class SafetyConfig:
                 "action_mode must be 'absolute_joint_position' or "
                 f"'delta_joint_position', got {self.action_mode!r}"
             )
-        if self.gripper_action_mode not in {"direct", "invert_absolute"}:
+        if self.gripper_action_mode not in {"direct", "hold", "invert_absolute"}:
             raise ValueError(
-                "gripper_action_mode must be 'direct' or 'invert_absolute', "
-                f"got {self.gripper_action_mode!r}"
+                "gripper_action_mode must be 'direct', 'hold', or "
+                f"'invert_absolute', got {self.gripper_action_mode!r}"
             )
         if self.max_joint_delta <= 0:
             raise ValueError("max_joint_delta must be positive")
@@ -232,13 +232,22 @@ class SafeJointActionExecutor:
                 # inference time. In that case, convert a policy value like 0.103
                 # into an open command near 0.897 before sending it to PandaRobot.
                 gripper_target = 1.0 - action[-1]
+            elif self.config.gripper_action_mode == "hold":
+                # Left/right arm-only policies often include a noisy gripper action
+                # even though the task never uses grasping. Keep the current gripper
+                # opening so arm debugging is not confounded by open/close commands.
+                gripper_target = current[-1]
             else:
-                # ACT policies trained on the Panda/GELLO LeRobot stream usually
-                # already use the live robot convention: large values open the
-                # gripper and small values close it.
+                # Policies trained on the Panda/GELLO LeRobot stream can use the
+                # live robot convention directly: large values open the gripper and
+                # small values close it.
                 gripper_target = action[-1]
             raw_delta[-1] = gripper_target - current[-1]
-            clipped_delta[-1] = raw_delta[-1]
+            clipped_delta[-1] = np.clip(
+                raw_delta[-1],
+                -self.config.max_gripper_delta,
+                self.config.max_gripper_delta,
+            )
         else:
             clipped_delta[-1] = np.clip(
                 clipped_delta[-1],

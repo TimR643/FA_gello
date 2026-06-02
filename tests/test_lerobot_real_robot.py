@@ -12,7 +12,11 @@ from gello.lerobot.real_robot import (
 
 def test_safe_executor_clips_absolute_joint_targets():
     executor = SafeJointActionExecutor(
-        SafetyConfig(max_joint_delta=0.1, max_gripper_delta=0.2)
+        SafetyConfig(
+            max_joint_delta=0.1,
+            max_gripper_delta=0.2,
+            gripper_action_mode="direct",
+        )
     )
     state = np.zeros(8, dtype=np.float32)
     policy_action = np.array([1.0, -1.0, 0.05, 0.5, -0.5, 0.0, 0.2, 1.0])
@@ -24,6 +28,37 @@ def test_safe_executor_clips_absolute_joint_targets():
         np.array([0.1, -0.1, 0.05, 0.1, -0.1, 0.0, 0.1, 0.2], dtype=np.float32),
     )
     np.testing.assert_allclose(result.target, result.clipped_delta)
+
+
+def test_safe_executor_supports_absolute_gripper_conventions():
+    state = np.array([0, 0, 0, -1, 0, 1, 0, 0.8], dtype=np.float32)
+    policy_action = np.array([0, 0, 0, -1, 0, 1, 0, 0.1], dtype=np.float32)
+
+    direct = SafeJointActionExecutor(
+        SafetyConfig(
+            max_joint_delta=0.1,
+            max_gripper_delta=0.2,
+            gripper_action_mode="direct",
+        )
+    ).make_safe_target(policy_action, state)
+    hold = SafeJointActionExecutor(
+        SafetyConfig(
+            max_joint_delta=0.1,
+            max_gripper_delta=0.2,
+            gripper_action_mode="hold",
+        )
+    ).make_safe_target(policy_action, state)
+    invert = SafeJointActionExecutor(
+        SafetyConfig(
+            max_joint_delta=0.1,
+            max_gripper_delta=0.2,
+            gripper_action_mode="invert_absolute",
+        )
+    ).make_safe_target(policy_action, state)
+
+    np.testing.assert_allclose(direct.target[-1], 0.6)
+    np.testing.assert_allclose(hold.target[-1], 0.8)
+    np.testing.assert_allclose(invert.target[-1], 0.9)
 
 
 def test_safe_executor_supports_delta_mode():

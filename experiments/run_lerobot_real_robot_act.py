@@ -52,7 +52,7 @@ class Args:
     max_joint_delta: float = 0.015
     max_gripper_delta: float = 0.03
     action_mode: str = "absolute_joint_position"
-    gripper_action_mode: str = "direct"
+    gripper_action_mode: str = "hold"
     seed: Optional[int] = 0
 
 
