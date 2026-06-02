@@ -42,6 +42,7 @@ class SafetyConfig:
     joint_lower: Tuple[float, ...] = tuple(PANDA_LOWER.tolist())
     joint_upper: Tuple[float, ...] = tuple(PANDA_UPPER.tolist())
     action_mode: str = "absolute_joint_position"
+    gripper_action_mode: str = "policy"
 
     def __post_init__(self) -> None:
         if self.action_mode not in {"absolute_joint_position", "delta_joint_position"}:
@@ -53,6 +54,11 @@ class SafetyConfig:
             raise ValueError("max_joint_delta must be positive")
         if self.max_gripper_delta <= 0:
             raise ValueError("max_gripper_delta must be positive")
+        if self.gripper_action_mode not in {"policy", "hold"}:
+            raise ValueError(
+                "gripper_action_mode must be 'policy' or 'hold', "
+                f"got {self.gripper_action_mode!r}"
+            )
         if len(self.joint_lower) != len(self.joint_upper):
             raise ValueError("joint_lower and joint_upper must have the same length")
 
@@ -213,6 +219,9 @@ class SafeJointActionExecutor:
             raw_delta = action - current
         else:
             raw_delta = action
+
+        if self.config.gripper_action_mode == "hold":
+            raw_delta[-1] = 0.0
 
         clipped_delta = raw_delta.copy()
         clipped_delta[:-1] = np.clip(
