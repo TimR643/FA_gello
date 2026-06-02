@@ -12,9 +12,9 @@ from gello.zmq_core.robot_node import ZMQClientRobot
 from gello.zmq_core.camera_node import ZMQClientCamera
 
 
-CHECKPOINT = "/home/tim/lerobot_outputs/panda_red_sorting_act_10k/checkpoints/010000/pretrained_model"
-DATASET_ROOT = "/home/tim/lerobot_data/panda_red_sorting_v1"
-REPO_ID = "tim/panda_red_sorting_v1"
+CHECKPOINT = "/home/tim/lerobot_outputs/train/act_left_right/checkpoints/050000/pretrained_model"
+DATASET_ROOT = "/home/tim/lerobot_data/from_hub/left_right/left_right_test/"
+REPO_ID = "tim/act_left_right"
 
 
 PANDA_LOWER = np.array([
