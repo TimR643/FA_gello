@@ -1,6 +1,7 @@
 """Run a SmolVLA LeRobot policy on the real GELLO/ZMQ robot stack via SSH tunnel.
 
-This script uses the shared real_robot.py loader with dataset metadata disabled by default.
+This script uses remapped LeRobot dataset metadata so make_policy receives
+the deployed SmolVLA feature schema expected by the checkpoint.
 
 It is made for a SmolVLA policy trained with:
     --rename_map='{"observation.images.wrist": "observation.images.camera1"}'
@@ -53,7 +54,7 @@ class Args:
     action_mode: str = "absolute_joint_position"
 
     task: str = "Move right when the red block is visible, otherwise move left."
-    use_dataset_meta: bool = False
+    use_dataset_meta: bool = True
 
 
 def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
@@ -109,6 +110,14 @@ def main(args: Args) -> None:
         repo_id=args.repo_id,
         device=args.device,
         use_dataset_meta=args.use_dataset_meta,
+        feature_rename_map={
+            "observation.images.wrist": "observation.images.camera1",
+        },
+        empty_feature_keys=(
+            "observation.images.camera2",
+            "observation.images.camera3",
+        ),
+        empty_feature_template_key="observation.images.camera1",
     )
 
     preprocess, postprocess = make_pre_post_processors(
@@ -156,6 +165,8 @@ def main(args: Args) -> None:
     print("max_gripper_delta:", args.max_gripper_delta)
     print("task:", args.task)
     print("use_dataset_meta:", args.use_dataset_meta)
+    print("metadata rename: observation.images.wrist -> observation.images.camera1")
+    print("metadata empty cameras: observation.images.camera2/camera3")
 
     print("\nRuntime mapping:")
     print("  observation.images.wrist   -> observation.images.camera1")

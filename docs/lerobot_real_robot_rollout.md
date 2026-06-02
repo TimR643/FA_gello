@@ -71,13 +71,13 @@ Damit bleibt nur die Hardware-Anbindung GELLO/ZMQ-spezifisch; Policy-Laden und B
 
 ## SmolVLA / HPC-Konfiguration
 
-Für SmolVLA-Policies, die mit `--rename_map='{"observation.images.wrist": "observation.images.camera1"}'` und `--policy.empty_cameras=2` trainiert wurden, darf die ursprüngliche Dataset-Meta beim Erzeugen der Policy nicht erneut in `make_policy` hineingereicht werden. Sonst kollidieren die Dataset-Keys `observation.images.wrist` mit den Checkpoint-Keys `observation.images.camera1`, `observation.images.camera2` und `observation.images.camera3`.
+Für SmolVLA-Policies, die mit `--rename_map='{"observation.images.wrist": "observation.images.camera1"}'` und `--policy.empty_cameras=2` trainiert wurden, muss `make_policy` weiterhin Dataset-Meta bekommen, weil LeRobot daraus Feature-Dimensionen und Normalisierungsstatistiken ableitet. Die ursprünglichen Dataset-Keys dürfen aber nicht unverändert hineingereicht werden, weil `observation.images.wrist` sonst mit den Checkpoint-Keys `observation.images.camera1`, `observation.images.camera2` und `observation.images.camera3` kollidiert.
 
-Die SmolVLA-Einstiegspunkte setzen deshalb standardmäßig `use_dataset_meta=False`. Runtime-Mapping:
+Die SmolVLA-Einstiegspunkte remappen deshalb die Dataset-Meta vor `make_policy`: `wrist` wird zu `camera1`, und `camera2`/`camera3` werden als leere Kamera-Features aus der `camera1`-Vorlage ergänzt. Runtime-Mapping:
 
 - `observation.images.wrist` wird zu `observation.images.camera1` umbenannt.
 - `observation.images.camera2` und `observation.images.camera3` werden als Nullbilder mit gleicher Form wie `camera1` ergänzt.
-- ACT-Rollouts verwenden weiter die Dataset-Meta und laufen über `experiments/run_lerobot_real_robot_act.py`.
+- ACT-Rollouts verwenden die Dataset-Meta unverändert und laufen über `experiments/run_lerobot_real_robot_act.py`.
 
 Auf dem HPC können die Launcher-Pfade ohne Editieren der Datei überschrieben werden:
 

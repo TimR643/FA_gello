@@ -8,6 +8,7 @@ batches, plus the safety checks that happen before an action reaches hardware.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -241,6 +242,87 @@ class SafeJointActionExecutor:
         return np.asarray(policy_action, dtype=np.float32).reshape(-1)
 
 
+@dataclass(frozen=True)
+class PolicyMetadataView:
+    """Dataset metadata view with deployment-time feature key overrides."""
+
+    source: Any
+    features: Mapping[str, Any]
+    stats: Mapping[str, Any]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
+
+
+def _copy_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    return deepcopy(dict(value))
+
+
+def _rename_keyed_items(items: dict[str, Any], rename_map: Mapping[str, str]) -> None:
+    for source_key, target_key in rename_map.items():
+        if source_key == target_key:
+            continue
+        if source_key in items:
+            items[target_key] = items.pop(source_key)
+
+
+def make_policy_metadata_view(
+    dataset_meta: Any,
+    *,
+    feature_rename_map: Optional[Mapping[str, str]] = None,
+    empty_feature_keys: Sequence[str] = (),
+    empty_feature_template_key: Optional[str] = None,
+) -> Any:
+    """Return metadata compatible with LeRobot ``make_policy``.
+
+    LeRobot requires dataset metadata to infer policy features and normalization
+    stats. For deployments where training renamed features, such as
+    ``observation.images.wrist`` -> ``observation.images.camera1``, this helper
+    keeps the original metadata object intact while presenting remapped feature
+    and stats keys to ``make_policy``.
+    """
+
+    rename_map = dict(feature_rename_map or {})
+    if not rename_map and not empty_feature_keys:
+        return dataset_meta
+
+    features = _copy_mapping(getattr(dataset_meta, "features", None))
+    stats = _copy_mapping(getattr(dataset_meta, "stats", None))
+    if not features:
+        raise ValueError(
+            "Dataset metadata does not expose a non-empty features mapping."
+        )
+
+    missing_sources = [key for key in rename_map if key not in features]
+    if missing_sources:
+        raise KeyError(
+            "Cannot rename missing dataset feature keys "
+            f"{missing_sources}. Available keys: {list(features.keys())}"
+        )
+
+    _rename_keyed_items(features, rename_map)
+    _rename_keyed_items(stats, rename_map)
+
+    template_key = empty_feature_template_key
+    if template_key is None and rename_map:
+        template_key = next(reversed(rename_map.values()))
+
+    if empty_feature_keys:
+        if template_key is None or template_key not in features:
+            raise KeyError(
+                "Cannot add empty feature keys without an existing template feature. "
+                f"template_key={template_key!r}, available keys={list(features.keys())}"
+            )
+        for key in empty_feature_keys:
+            features.setdefault(key, deepcopy(features[template_key]))
+            if template_key in stats:
+                stats.setdefault(key, deepcopy(stats[template_key]))
+
+    return PolicyMetadataView(source=dataset_meta, features=features, stats=stats)
+
+
 def load_lerobot_policy(
     *,
     checkpoint: str,
@@ -248,17 +330,17 @@ def load_lerobot_policy(
     repo_id: str,
     device: Optional[str] = None,
     use_dataset_meta: bool = True,
+    feature_rename_map: Optional[Mapping[str, str]] = None,
+    empty_feature_keys: Sequence[str] = (),
+    empty_feature_template_key: Optional[str] = None,
 ) -> PolicyBundle:
     """Load a trained LeRobot policy.
 
-    ``use_dataset_meta`` should stay enabled for policies whose checkpoint config
-    and dataset features use the same observation names. Disable it for deployed
-    policies whose checkpoint already contains the final feature schema, for
-    example SmolVLA runs trained with a ``rename_map`` from
-    ``observation.images.wrist`` to ``observation.images.camera1`` plus empty
-    cameras. In that case passing the original dataset metadata back into
-    ``make_policy`` can reintroduce the pre-rename keys and cause a config/meta
-    mismatch.
+    LeRobot's ``make_policy`` requires either dataset metadata or a sim-env
+    config, because it derives policy feature dimensions and dataset statistics
+    there. For checkpoints trained with renamed feature keys, keep
+    ``use_dataset_meta`` enabled and pass ``feature_rename_map`` plus optional
+    ``empty_feature_keys`` so the metadata schema matches the deployed policy.
     """
 
     import torch
@@ -270,7 +352,14 @@ def load_lerobot_policy(
     dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
-    ds_meta = dataset.meta if use_dataset_meta else None
+    ds_meta = None
+    if use_dataset_meta:
+        ds_meta = make_policy_metadata_view(
+            dataset.meta,
+            feature_rename_map=feature_rename_map,
+            empty_feature_keys=empty_feature_keys,
+            empty_feature_template_key=empty_feature_template_key,
+        )
     policy = make_policy(cfg=cfg, ds_meta=ds_meta)
     policy.to(resolved_device)
     policy.eval()
