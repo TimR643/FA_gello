@@ -100,7 +100,7 @@ class PandaRobot(Robot):
 
         if gripper_command >= open_threshold:
             self.gripper_closed = False
-            self.gripper.goto(width=MAX_OPEN, speed=1.0, force=1.0)
+            self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
 
         elif gripper_command <= close_threshold and not self.gripper_closed:
             self.gripper_closed = True
