@@ -92,12 +92,13 @@ class PandaRobot(Robot):
         #   large values (about 0.88 in the training data) mean open,
         #   small values close the gripper.
         # Values between the thresholds hold the current gripper state to avoid
-        # repeated open/close commands from small policy or sensor noise.
+        # close commands from small policy or sensor noise. Open commands are
+        # repeated so the gripper stays open even if its internal state flag is stale.
         open_threshold = 0.75
         close_threshold = 0.25
         gripper_command = float(joint_state[-1])
 
-        if gripper_command >= open_threshold and self.gripper_closed:
+        if gripper_command >= open_threshold:
             self.gripper_closed = False
             self.gripper.goto(width=MAX_OPEN, speed=1.0, force=1.0)
 
