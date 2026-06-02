@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import tyro
 
+from gello.cameras.camera import CameraDriver
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
     LeRobotObservationAdapter,
@@ -53,9 +54,9 @@ class Args:
     action_mode: str = "absolute_joint_position"
 
 
-def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
+def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
     host = args.camera_host or args.robot_host
-    clients: dict[str, ZMQClientCamera] = {}
+    clients: dict[str, CameraDriver] = {}
     for camera in args.cameras:
         if camera == "wrist":
             clients[camera] = ZMQClientCamera(port=args.wrist_camera_port, host=host)

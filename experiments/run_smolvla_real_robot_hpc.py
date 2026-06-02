@@ -1,6 +1,6 @@
 """Run a SmolVLA LeRobot policy on the real GELLO/ZMQ robot stack via SSH tunnel.
 
-This script does not modify existing gello/lerobot/real_robot.py.
+This script uses the shared real_robot.py loader with dataset metadata disabled by default.
 
 It is made for a SmolVLA policy trained with:
     --rename_map='{"observation.images.wrist": "observation.images.camera1"}'
@@ -18,8 +18,9 @@ import torch
 import tyro
 from lerobot.policies import make_pre_post_processors
 
+from gello.cameras.camera import CameraDriver
 from gello.env import RobotEnv
-import gello.lerobot.real_robot as real_robot
+from gello.lerobot import real_robot
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
@@ -52,11 +53,12 @@ class Args:
     action_mode: str = "absolute_joint_position"
 
     task: str = "Move right when the red block is visible, otherwise move left."
+    use_dataset_meta: bool = False
 
 
-def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
+def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
     host = args.camera_host or args.robot_host
-    clients: dict[str, ZMQClientCamera] = {}
+    clients: dict[str, CameraDriver] = {}
 
     for camera in args.cameras:
         if camera == "wrist":
@@ -64,51 +66,11 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
         elif camera == "base":
             clients[camera] = ZMQClientCamera(port=args.base_camera_port, host=host)
         else:
-            raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
+            raise ValueError(
+                f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
+            )
 
     return clients
-
-
-def _load_lerobot_policy_ignore_dataset_meta(
-    checkpoint: str,
-    dataset_root: str,
-    repo_id: str,
-    device: Optional[str],
-):
-    """Load policy while forcing make_policy(..., ds_meta=None).
-
-    This avoids:
-        dataset meta: observation.images.wrist
-        policy cfg : observation.images.camera1/camera2/camera3
-
-    Patch is local to this Python process only.
-    """
-
-    loader_globals = real_robot.load_lerobot_policy.__globals__
-
-    if "make_policy" not in loader_globals:
-        raise RuntimeError(
-            "Could not find make_policy inside load_lerobot_policy globals. "
-            "Please inspect gello/lerobot/real_robot.py."
-        )
-
-    original_make_policy = loader_globals["make_policy"]
-
-    def patched_make_policy(*args, **kwargs):
-        kwargs["ds_meta"] = None
-        return original_make_policy(*args, **kwargs)
-
-    loader_globals["make_policy"] = patched_make_policy
-
-    try:
-        return real_robot.load_lerobot_policy(
-            checkpoint=checkpoint,
-            dataset_root=dataset_root,
-            repo_id=repo_id,
-            device=device,
-        )
-    finally:
-        loader_globals["make_policy"] = original_make_policy
 
 
 def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
@@ -116,7 +78,10 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     batch["robot_type"] = [""]
 
     # Runtime mapping: live wrist camera -> policy camera1
-    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
+    if (
+        "observation.images.wrist" in batch
+        and "observation.images.camera1" not in batch
+    ):
         batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
 
     if "observation.images.camera1" not in batch:
@@ -138,11 +103,12 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
 
 
 def main(args: Args) -> None:
-    bundle = _load_lerobot_policy_ignore_dataset_meta(
+    bundle = real_robot.load_lerobot_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
+        use_dataset_meta=args.use_dataset_meta,
     )
 
     preprocess, postprocess = make_pre_post_processors(
@@ -189,6 +155,7 @@ def main(args: Args) -> None:
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
     print("task:", args.task)
+    print("use_dataset_meta:", args.use_dataset_meta)
 
     print("\nRuntime mapping:")
     print("  observation.images.wrist   -> observation.images.camera1")

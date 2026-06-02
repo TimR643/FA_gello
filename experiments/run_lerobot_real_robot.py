@@ -24,6 +24,7 @@ import torch
 import tyro
 from lerobot.policies import make_pre_post_processors
 
+from gello.cameras.camera import CameraDriver
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
     LeRobotObservationAdapter,
@@ -63,11 +64,12 @@ class Args:
     action_mode: str = "absolute_joint_position"
 
     task: str = "Move right when the red block is visible, otherwise move left."
+    use_dataset_meta: bool = False
 
 
-def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
+def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
     host = args.camera_host or args.robot_host
-    clients: dict[str, ZMQClientCamera] = {}
+    clients: dict[str, CameraDriver] = {}
 
     for camera in args.cameras:
         if camera == "wrist":
@@ -104,7 +106,10 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     batch["robot_type"] = [""]
 
     # Map the real wrist camera to the name used during training.
-    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
+    if (
+        "observation.images.wrist" in batch
+        and "observation.images.camera1" not in batch
+    ):
         batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
 
     if "observation.images.camera1" not in batch:
@@ -132,6 +137,7 @@ def main(args: Args) -> None:
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
+        use_dataset_meta=args.use_dataset_meta,
     )
 
     preprocess, postprocess = make_pre_post_processors(
@@ -179,6 +185,7 @@ def main(args: Args) -> None:
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
     print("task:", args.task)
+    print("use_dataset_meta:", args.use_dataset_meta)
 
     print("\nRuntime image mapping:")
     print("  observation.images.wrist   -> observation.images.camera1")

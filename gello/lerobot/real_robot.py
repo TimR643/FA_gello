@@ -13,7 +13,6 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-
 PANDA_LOWER = np.array(
     [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0],
     dtype=np.float32,
@@ -115,8 +114,7 @@ class LeRobotObservationAdapter:
             raise ValueError(f"Live state contains NaN/Inf: {state}")
 
         images = {
-            camera: self._get_camera_image(obs, camera)
-            for camera in self.camera_keys
+            camera: self._get_camera_image(obs, camera) for camera in self.camera_keys
         }
 
         import torch
@@ -249,8 +247,19 @@ def load_lerobot_policy(
     dataset_root: str,
     repo_id: str,
     device: Optional[str] = None,
+    use_dataset_meta: bool = True,
 ) -> PolicyBundle:
-    """Load a trained LeRobot policy using the dataset metadata it was trained on."""
+    """Load a trained LeRobot policy.
+
+    ``use_dataset_meta`` should stay enabled for policies whose checkpoint config
+    and dataset features use the same observation names. Disable it for deployed
+    policies whose checkpoint already contains the final feature schema, for
+    example SmolVLA runs trained with a ``rename_map`` from
+    ``observation.images.wrist`` to ``observation.images.camera1`` plus empty
+    cameras. In that case passing the original dataset metadata back into
+    ``make_policy`` can reintroduce the pre-rename keys and cause a config/meta
+    mismatch.
+    """
 
     import torch
     from lerobot.configs.policies import PreTrainedConfig
@@ -261,7 +270,8 @@ def load_lerobot_policy(
     dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
-    policy = make_policy(cfg=cfg, ds_meta=dataset.meta)
+    ds_meta = dataset.meta if use_dataset_meta else None
+    policy = make_policy(cfg=cfg, ds_meta=ds_meta)
     policy.to(resolved_device)
     policy.eval()
     return PolicyBundle(policy=policy, dataset=dataset, device=resolved_device)

@@ -17,7 +17,7 @@ echo "CKPT=$CKPT"
 test -f "$DATASET_ROOT/meta/info.json" || { echo "FEHLT: $DATASET_ROOT/meta/info.json"; exit 1; }
 test -d "$CKPT" || { echo "FEHLT: $CKPT"; exit 1; }
 
-python experiments/run_lerobot_real_robot_act.py \
+python experiments/run_lerobot_real_robot.py \
   --checkpoint "$CKPT" \
   --dataset-root "$DATASET_ROOT" \
   --repo-id "$DATASET_REPO_ID" \
@@ -27,6 +27,6 @@ python experiments/run_lerobot_real_robot_act.py \
   --cameras wrist \
   --duration 50.0 \
   --hz 5.0 \
-  --max-joint-delta 0.05 \
+  --max-joint-delta 0.005 \
   --max-gripper-delta 0.01 \
   --execute
