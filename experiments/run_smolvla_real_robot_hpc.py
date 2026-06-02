@@ -10,14 +10,16 @@ It is made for a SmolVLA policy trained with:
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import torch
 import tyro
 from lerobot.policies import make_pre_post_processors
 
+from gello.cameras.camera import CameraDriver
 from gello.env import RobotEnv
 import gello.lerobot.real_robot as real_robot
 from gello.zmq_core.camera_node import ZMQClientCamera
@@ -54,9 +56,9 @@ class Args:
     task: str = "Move right when the red block is visible, otherwise move left."
 
 
-def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
+def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
     host = args.camera_host or args.robot_host
-    clients: dict[str, ZMQClientCamera] = {}
+    clients: dict[str, CameraDriver] = {}
 
     for camera in args.cameras:
         if camera == "wrist":
@@ -64,51 +66,72 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
         elif camera == "base":
             clients[camera] = ZMQClientCamera(port=args.base_camera_port, host=host)
         else:
-            raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
+            raise ValueError(
+                f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
+            )
 
     return clients
 
 
-def _load_lerobot_policy_ignore_dataset_meta(
+class _PolicyMetadataView:
+    def __init__(self, source: Any, features: dict[str, Any], stats: dict[str, Any]):
+        self.source = source
+        self.features = features
+        self.stats = stats
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
+
+
+def _make_smolvla_policy_meta(dataset_meta: Any) -> _PolicyMetadataView:
+    features = deepcopy(dict(dataset_meta.features))
+    stats = deepcopy(dict(getattr(dataset_meta, "stats", {})))
+
+    wrist_key = "observation.images.wrist"
+    camera1_key = "observation.images.camera1"
+
+    if wrist_key in features:
+        features[camera1_key] = features.pop(wrist_key)
+    elif camera1_key not in features:
+        raise KeyError(
+            "Dataset metadata has neither observation.images.wrist nor "
+            f"observation.images.camera1. Available keys: {list(features.keys())}"
+        )
+
+    if wrist_key in stats:
+        stats[camera1_key] = stats.pop(wrist_key)
+
+    for empty_key in ("observation.images.camera2", "observation.images.camera3"):
+        features.setdefault(empty_key, deepcopy(features[camera1_key]))
+        if camera1_key in stats:
+            stats.setdefault(empty_key, deepcopy(stats[camera1_key]))
+
+    return _PolicyMetadataView(source=dataset_meta, features=features, stats=stats)
+
+
+def _load_smolvla_lerobot_policy(
     checkpoint: str,
     dataset_root: str,
     repo_id: str,
     device: Optional[str],
-):
-    """Load policy while forcing make_policy(..., ds_meta=None).
+) -> real_robot.PolicyBundle:
+    """Load SmolVLA with dataset metadata remapped to checkpoint camera keys."""
 
-    This avoids:
-        dataset meta: observation.images.wrist
-        policy cfg : observation.images.camera1/camera2/camera3
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import make_policy
 
-    Patch is local to this Python process only.
-    """
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
+    cfg = PreTrainedConfig.from_pretrained(checkpoint)
+    cfg.device = resolved_device
 
-    loader_globals = real_robot.load_lerobot_policy.__globals__
-
-    if "make_policy" not in loader_globals:
-        raise RuntimeError(
-            "Could not find make_policy inside load_lerobot_policy globals. "
-            "Please inspect gello/lerobot/real_robot.py."
-        )
-
-    original_make_policy = loader_globals["make_policy"]
-
-    def patched_make_policy(*args, **kwargs):
-        kwargs["ds_meta"] = None
-        return original_make_policy(*args, **kwargs)
-
-    loader_globals["make_policy"] = patched_make_policy
-
-    try:
-        return real_robot.load_lerobot_policy(
-            checkpoint=checkpoint,
-            dataset_root=dataset_root,
-            repo_id=repo_id,
-            device=device,
-        )
-    finally:
-        loader_globals["make_policy"] = original_make_policy
+    policy = make_policy(cfg=cfg, ds_meta=_make_smolvla_policy_meta(dataset.meta))
+    policy.to(resolved_device)
+    policy.eval()
+    return real_robot.PolicyBundle(
+        policy=policy, dataset=dataset, device=resolved_device
+    )
 
 
 def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
@@ -116,7 +139,10 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     batch["robot_type"] = [""]
 
     # Runtime mapping: live wrist camera -> policy camera1
-    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
+    if (
+        "observation.images.wrist" in batch
+        and "observation.images.camera1" not in batch
+    ):
         batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
 
     if "observation.images.camera1" not in batch:
@@ -138,7 +164,7 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
 
 
 def main(args: Args) -> None:
-    bundle = _load_lerobot_policy_ignore_dataset_meta(
+    bundle = _load_smolvla_lerobot_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
