@@ -38,4 +38,6 @@ python experiments/run_lerobot_real_robot_act.py \
   --hz 2.0 \
   --max-joint-delta 0.005 \
   --max-gripper-delta 0.01 \
+  --gripper-action-mode hold \
+  --seed 0 \
   --execute

@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import tyro
+from lerobot.policies import make_pre_post_processors
 
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
@@ -51,6 +52,8 @@ class Args:
     max_joint_delta: float = 0.015
     max_gripper_delta: float = 0.03
     action_mode: str = "absolute_joint_position"
+    gripper_action_mode: str = "hold"
+    seed: Optional[int] = 0
 
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
@@ -76,6 +79,21 @@ def main(args: Args) -> None:
         device=args.device,
     )
 
+    preprocess, postprocess = make_pre_post_processors(
+        bundle.policy.config,
+        args.checkpoint,
+        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
+    )
+
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+
+    if hasattr(bundle.policy, "reset"):
+        bundle.policy.reset()
+
     adapter = LeRobotObservationAdapter(
         device=bundle.device,
         camera_keys=args.cameras,
@@ -88,6 +106,7 @@ def main(args: Args) -> None:
         max_joint_delta=args.max_joint_delta,
         max_gripper_delta=args.max_gripper_delta,
         action_mode=args.action_mode,
+        gripper_action_mode=args.gripper_action_mode,
     )
     executor = SafeJointActionExecutor(safety)
 
@@ -110,6 +129,8 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("gripper_action_mode:", args.gripper_action_mode)
+    print("seed:", args.seed)
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but the robot will not move.")
@@ -132,7 +153,9 @@ def main(args: Args) -> None:
         state = adapter.state_from_obs(obs)
 
         with torch.no_grad():
+            batch = preprocess(batch)
             policy_action = bundle.policy.select_action(batch)
+            policy_action = postprocess(policy_action)
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
