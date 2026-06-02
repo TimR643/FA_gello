@@ -8,7 +8,7 @@ cd /home/tim/gello_software
 
 export DATASET_REPO_ID="TimR643/left_right"
 export DATASET_ROOT="/home/tim/lerobot_data/left_right/left_right_test"
-export CKPT="/home/tim/lerobot_outputs/train/act_left_right/checkpoints/last/pretrained_model"
+export CKPT="/home/tim/lerobot_outputs/train/smolvla_left_right_wrist/checkpoints/last/pretrained_model"
 
 echo "DATASET_REPO_ID=$DATASET_REPO_ID"
 echo "DATASET_ROOT=$DATASET_ROOT"
