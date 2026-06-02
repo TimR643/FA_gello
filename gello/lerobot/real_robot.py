@@ -42,12 +42,17 @@ class SafetyConfig:
     joint_lower: Tuple[float, ...] = tuple(PANDA_LOWER.tolist())
     joint_upper: Tuple[float, ...] = tuple(PANDA_UPPER.tolist())
     action_mode: str = "absolute_joint_position"
+    gripper_mode: str = "policy"
 
     def __post_init__(self) -> None:
         if self.action_mode not in {"absolute_joint_position", "delta_joint_position"}:
             raise ValueError(
                 "action_mode must be 'absolute_joint_position' or "
                 f"'delta_joint_position', got {self.action_mode!r}"
+            )
+        if self.gripper_mode not in {"policy", "hold"}:
+            raise ValueError(
+                "gripper_mode must be 'policy' or 'hold', " f"got {self.gripper_mode!r}"
             )
         if self.max_joint_delta <= 0:
             raise ValueError("max_joint_delta must be positive")
@@ -219,11 +224,14 @@ class SafeJointActionExecutor:
             -self.config.max_joint_delta,
             self.config.max_joint_delta,
         )
-        clipped_delta[-1] = np.clip(
-            clipped_delta[-1],
-            -self.config.max_gripper_delta,
-            self.config.max_gripper_delta,
-        )
+        if self.config.gripper_mode == "hold":
+            clipped_delta[-1] = 0.0
+        else:
+            clipped_delta[-1] = np.clip(
+                clipped_delta[-1],
+                -self.config.max_gripper_delta,
+                self.config.max_gripper_delta,
+            )
 
         target = np.clip(current + clipped_delta, self.lower, self.upper).astype(
             np.float32
@@ -240,6 +248,14 @@ class SafeJointActionExecutor:
         if hasattr(policy_action, "detach"):
             policy_action = policy_action.squeeze(0).detach().cpu().numpy()
         return np.asarray(policy_action, dtype=np.float32).reshape(-1)
+
+
+def reset_policy_action_queue(policy: Any) -> None:
+    """Reset a LeRobot policy action queue/state when the policy exposes reset()."""
+
+    reset = getattr(policy, "reset", None)
+    if callable(reset):
+        reset()
 
 
 @dataclass(frozen=True)

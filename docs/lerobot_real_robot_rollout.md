@@ -93,3 +93,11 @@ Für einen nicht-interaktiven Dry-Run:
 ```bash
 EXECUTE=0 REQUIRE_ENTER=0 ./start_smolvla_policy_hpc.sh
 ```
+
+### Zusätzliche Sicherheitsoptionen für SmolVLA
+
+Die SmolVLA-Launcher halten den Gripper jetzt standardmäßig (`--gripper-mode hold`). Für die reine Links/Rechts-Aufgabe verhindert das, dass ein nahezu konstanter Policy-Gripper-Wert zusammen mit verrauschten Franka-Gripper-Observations dauernd Öffnen/Schließen auslöst. Falls ein Modell den Gripper wirklich steuern soll, kann `GRIPPER_MODE=policy` gesetzt werden.
+
+Außerdem wird die Policy standardmäßig in jedem Control-Step neu geplant (`--replan-every-step`), damit die aktuelle Kamera-Observation für die Entscheidung genutzt wird und nicht nur ein alter Action-Chunk abgefahren wird. `REPLAN_EVERY_STEP=0` deaktiviert dieses Verhalten.
+
+`--max-joint-distance-from-start` begrenzt zusätzlich, wie weit ein Rollout von der Startpose wegdriften darf. Der HPC-Launcher nutzt standardmäßig `MAX_JOINT_DISTANCE_FROM_START=0.25` rad und stoppt vor dem Senden eines Zieles, das weiter weg liegt.

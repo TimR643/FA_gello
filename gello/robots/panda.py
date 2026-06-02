@@ -39,25 +39,22 @@ class PandaRobot(Robot):
         self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
         self.last_target_width = 0.08
 
-
         self.gripper_closed = False
 
         self.gripper
-        
+
         # Manueller Override Status
         self.manual_release = False
-        
+
         # Starte den Hintergrund-Thread für die Tastatur
         threading.Thread(target=self._listen_for_manual_open, daemon=True).start()
         print(">>> MANUELLER OVERRIDE AKTIV: Drücke ENTER im Terminal zum Öffnen! <<<")
 
-
     def _listen_for_manual_open(self):
         while True:
-            input() # Wartet auf Enter-Taste
+            input()  # Wartet auf Enter-Taste
             self.manual_release = True
             print("!!! MANUELLER BEFEHL: GREIFER ÖFFNEN !!!")
-
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -88,17 +85,22 @@ class PandaRobot(Robot):
         except Exception as e:
             print("Could not update joint positions:", e)
 
+        # ``joint_state[-1]`` is the normalized Franka gripper width reported by
+        # ``get_joint_state``: 1.0 means open and 0.0 means closed. Keep a wide
+        # hysteresis band so noisy observations or small policy deltas do not make
+        # the gripper repeatedly open and close.
         close_threshold = 0.25
-        open_threshold = 0.15
+        open_threshold = 0.75
 
-        gripper_closed = joint_state[-1] > close_threshold
-        gripper_open = joint_state[-1] < open_threshold
+        gripper_command = float(joint_state[-1])
+        should_close = gripper_command <= close_threshold
+        should_open = gripper_command >= open_threshold
 
-        if gripper_closed and not self.gripper_closed:
+        if should_close and not self.gripper_closed:
             self.gripper_closed = True
             self.gripper.grasp(speed=0.1, force=1.0)
 
-        elif gripper_open and self.gripper_closed:
+        elif should_open and self.gripper_closed:
             self.gripper_closed = False
             self.gripper.goto(width=MAX_OPEN, speed=1.0, force=1.0)
 

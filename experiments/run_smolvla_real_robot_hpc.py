@@ -52,6 +52,9 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    gripper_mode: str = "hold"
+    max_joint_distance_from_start: Optional[float] = 0.25
+    replan_every_step: bool = True
 
     task: str = "Move right when the red block is visible, otherwise move left."
     use_dataset_meta: bool = True
@@ -141,6 +144,7 @@ def main(args: Args) -> None:
         max_joint_delta=args.max_joint_delta,
         max_gripper_delta=args.max_gripper_delta,
         action_mode=args.action_mode,
+        gripper_mode=args.gripper_mode,
     )
     executor = real_robot.SafeJointActionExecutor(safety)
 
@@ -163,6 +167,9 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("gripper_mode:", args.gripper_mode)
+    print("max_joint_distance_from_start:", args.max_joint_distance_from_start)
+    print("replan_every_step:", args.replan_every_step)
     print("task:", args.task)
     print("use_dataset_meta:", args.use_dataset_meta)
     print("metadata rename: observation.images.wrist -> observation.images.camera1")
@@ -187,6 +194,8 @@ def main(args: Args) -> None:
         raise ValueError("duration * hz must produce at least one step.")
 
     dt = 1.0 / args.hz
+    initial_state: Optional[np.ndarray] = None
+    real_robot.reset_policy_action_queue(bundle.policy)
 
     for step in range(steps):
         started = time.time()
@@ -194,11 +203,15 @@ def main(args: Args) -> None:
         obs = env.get_obs()
         batch = adapter.make_batch(obs)
         state = adapter.state_from_obs(obs)
+        if initial_state is None:
+            initial_state = state.copy()
 
         with torch.no_grad():
             batch = _prepare_smolvla_batch(batch, args.task)
             batch = preprocess(batch)
 
+            if args.replan_every_step:
+                real_robot.reset_policy_action_queue(bundle.policy)
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
 
@@ -210,6 +223,19 @@ def main(args: Args) -> None:
         print("raw_delta     :", np.round(safe.raw_delta, 3))
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
+
+        if args.max_joint_distance_from_start is not None and initial_state is not None:
+            planned_from_start = safe.target[:-1] - initial_state[:-1]
+            max_planned = float(np.max(np.abs(planned_from_start)))
+            if max_planned > args.max_joint_distance_from_start:
+                print(
+                    "\nSAFETY STOP: planned arm target is too far from rollout start. "
+                    f"max_abs_delta={max_planned:.3f} rad, "
+                    f"limit={args.max_joint_distance_from_start:.3f} rad"
+                )
+                print("start_state   :", np.round(initial_state, 3))
+                print("from_start    :", np.round(planned_from_start, 3))
+                break
 
         if args.execute:
             env.step(safe.target)

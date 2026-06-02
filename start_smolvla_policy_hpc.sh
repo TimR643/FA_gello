@@ -22,6 +22,9 @@ DURATION="${DURATION:-10.0}"
 HZ="${HZ:-2.0}"
 MAX_JOINT_DELTA="${MAX_JOINT_DELTA:-0.005}"
 MAX_GRIPPER_DELTA="${MAX_GRIPPER_DELTA:-0.01}"
+GRIPPER_MODE="${GRIPPER_MODE:-hold}"
+MAX_JOINT_DISTANCE_FROM_START="${MAX_JOINT_DISTANCE_FROM_START:-0.25}"
+REPLAN_EVERY_STEP="${REPLAN_EVERY_STEP:-1}"
 TASK="${TASK:-Move right when the red block is visible, otherwise move left.}"
 EXECUTE="${EXECUTE:-1}"
 REQUIRE_ENTER="${REQUIRE_ENTER:-1}"
@@ -54,11 +57,16 @@ cmd=(
   --hz "$HZ"
   --max-joint-delta "$MAX_JOINT_DELTA"
   --max-gripper-delta "$MAX_GRIPPER_DELTA"
+  --gripper-mode "$GRIPPER_MODE"
+  --max-joint-distance-from-start "$MAX_JOINT_DISTANCE_FROM_START"
   --task "$TASK"
 )
 
 if [[ "$EXECUTE" == "1" ]]; then
   cmd+=(--execute)
+fi
+if [[ "$REPLAN_EVERY_STEP" != "1" ]]; then
+  cmd+=(--no-replan-every-step)
 fi
 if [[ "$REQUIRE_ENTER" != "1" ]]; then
   cmd+=(--no-require-enter)

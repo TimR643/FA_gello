@@ -29,4 +29,6 @@ python experiments/run_lerobot_real_robot.py \
   --hz 5.0 \
   --max-joint-delta 0.005 \
   --max-gripper-delta 0.01 \
+  --gripper-mode hold \
+  --max-joint-distance-from-start 0.25 \
   --execute
