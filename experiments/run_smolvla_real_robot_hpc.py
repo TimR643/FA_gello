@@ -1,7 +1,6 @@
 """Run a SmolVLA LeRobot policy on the real GELLO/ZMQ robot stack via SSH tunnel.
 
-This script uses remapped LeRobot dataset metadata so make_policy receives
-the deployed SmolVLA feature schema expected by the checkpoint.
+This script does not modify existing gello/lerobot/real_robot.py.
 
 It is made for a SmolVLA policy trained with:
     --rename_map='{"observation.images.wrist": "observation.images.camera1"}'
@@ -19,9 +18,8 @@ import torch
 import tyro
 from lerobot.policies import make_pre_post_processors
 
-from gello.cameras.camera import CameraDriver
 from gello.env import RobotEnv
-from gello.lerobot import real_robot
+import gello.lerobot.real_robot as real_robot
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
@@ -52,17 +50,13 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
-    gripper_mode: str = "hold"
-    max_joint_distance_from_start: Optional[float] = 0.25
-    replan_every_step: bool = True
 
     task: str = "Move right when the red block is visible, otherwise move left."
-    use_dataset_meta: bool = True
 
 
-def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
+def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     host = args.camera_host or args.robot_host
-    clients: dict[str, CameraDriver] = {}
+    clients: dict[str, ZMQClientCamera] = {}
 
     for camera in args.cameras:
         if camera == "wrist":
@@ -70,11 +64,51 @@ def _make_camera_clients(args: Args) -> dict[str, CameraDriver]:
         elif camera == "base":
             clients[camera] = ZMQClientCamera(port=args.base_camera_port, host=host)
         else:
-            raise ValueError(
-                f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
-            )
+            raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
 
     return clients
+
+
+def _load_lerobot_policy_ignore_dataset_meta(
+    checkpoint: str,
+    dataset_root: str,
+    repo_id: str,
+    device: Optional[str],
+):
+    """Load policy while forcing make_policy(..., ds_meta=None).
+
+    This avoids:
+        dataset meta: observation.images.wrist
+        policy cfg : observation.images.camera1/camera2/camera3
+
+    Patch is local to this Python process only.
+    """
+
+    loader_globals = real_robot.load_lerobot_policy.__globals__
+
+    if "make_policy" not in loader_globals:
+        raise RuntimeError(
+            "Could not find make_policy inside load_lerobot_policy globals. "
+            "Please inspect gello/lerobot/real_robot.py."
+        )
+
+    original_make_policy = loader_globals["make_policy"]
+
+    def patched_make_policy(*args, **kwargs):
+        kwargs["ds_meta"] = None
+        return original_make_policy(*args, **kwargs)
+
+    loader_globals["make_policy"] = patched_make_policy
+
+    try:
+        return real_robot.load_lerobot_policy(
+            checkpoint=checkpoint,
+            dataset_root=dataset_root,
+            repo_id=repo_id,
+            device=device,
+        )
+    finally:
+        loader_globals["make_policy"] = original_make_policy
 
 
 def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
@@ -82,10 +116,7 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     batch["robot_type"] = [""]
 
     # Runtime mapping: live wrist camera -> policy camera1
-    if (
-        "observation.images.wrist" in batch
-        and "observation.images.camera1" not in batch
-    ):
+    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
         batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
 
     if "observation.images.camera1" not in batch:
@@ -107,20 +138,11 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
 
 
 def main(args: Args) -> None:
-    bundle = real_robot.load_lerobot_policy(
+    bundle = _load_lerobot_policy_ignore_dataset_meta(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
-        use_dataset_meta=args.use_dataset_meta,
-        feature_rename_map={
-            "observation.images.wrist": "observation.images.camera1",
-        },
-        empty_feature_keys=(
-            "observation.images.camera2",
-            "observation.images.camera3",
-        ),
-        empty_feature_template_key="observation.images.camera1",
     )
 
     preprocess, postprocess = make_pre_post_processors(
@@ -144,7 +166,6 @@ def main(args: Args) -> None:
         max_joint_delta=args.max_joint_delta,
         max_gripper_delta=args.max_gripper_delta,
         action_mode=args.action_mode,
-        gripper_mode=args.gripper_mode,
     )
     executor = real_robot.SafeJointActionExecutor(safety)
 
@@ -167,13 +188,7 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
-    print("gripper_mode:", args.gripper_mode)
-    print("max_joint_distance_from_start:", args.max_joint_distance_from_start)
-    print("replan_every_step:", args.replan_every_step)
     print("task:", args.task)
-    print("use_dataset_meta:", args.use_dataset_meta)
-    print("metadata rename: observation.images.wrist -> observation.images.camera1")
-    print("metadata empty cameras: observation.images.camera2/camera3")
 
     print("\nRuntime mapping:")
     print("  observation.images.wrist   -> observation.images.camera1")
@@ -194,8 +209,6 @@ def main(args: Args) -> None:
         raise ValueError("duration * hz must produce at least one step.")
 
     dt = 1.0 / args.hz
-    initial_state: Optional[np.ndarray] = None
-    real_robot.reset_policy_action_queue(bundle.policy)
 
     for step in range(steps):
         started = time.time()
@@ -203,15 +216,11 @@ def main(args: Args) -> None:
         obs = env.get_obs()
         batch = adapter.make_batch(obs)
         state = adapter.state_from_obs(obs)
-        if initial_state is None:
-            initial_state = state.copy()
 
         with torch.no_grad():
             batch = _prepare_smolvla_batch(batch, args.task)
             batch = preprocess(batch)
 
-            if args.replan_every_step:
-                real_robot.reset_policy_action_queue(bundle.policy)
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
 
@@ -223,19 +232,6 @@ def main(args: Args) -> None:
         print("raw_delta     :", np.round(safe.raw_delta, 3))
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
-
-        if args.max_joint_distance_from_start is not None and initial_state is not None:
-            planned_from_start = safe.target[:-1] - initial_state[:-1]
-            max_planned = float(np.max(np.abs(planned_from_start)))
-            if max_planned > args.max_joint_distance_from_start:
-                print(
-                    "\nSAFETY STOP: planned arm target is too far from rollout start. "
-                    f"max_abs_delta={max_planned:.3f} rad, "
-                    f"limit={args.max_joint_distance_from_start:.3f} rad"
-                )
-                print("start_state   :", np.round(initial_state, 3))
-                print("from_start    :", np.round(planned_from_start, 3))
-                break
 
         if args.execute:
             env.step(safe.target)
