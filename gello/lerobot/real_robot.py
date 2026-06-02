@@ -220,11 +220,18 @@ class SafeJointActionExecutor:
             -self.config.max_joint_delta,
             self.config.max_joint_delta,
         )
-        clipped_delta[-1] = np.clip(
-            clipped_delta[-1],
-            -self.config.max_gripper_delta,
-            self.config.max_gripper_delta,
-        )
+        if self.config.action_mode == "absolute_joint_position":
+            # The Panda gripper command is discrete/thresholded, not a smooth
+            # joint servo target. Forward the policy's absolute gripper value
+            # directly so a value like 0.103 reaches PandaRobot as "open"
+            # instead of being slowly ramped from the current sensor reading.
+            clipped_delta[-1] = raw_delta[-1]
+        else:
+            clipped_delta[-1] = np.clip(
+                clipped_delta[-1],
+                -self.config.max_gripper_delta,
+                self.config.max_gripper_delta,
+            )
 
         target = np.clip(current + clipped_delta, self.lower, self.upper).astype(
             np.float32
