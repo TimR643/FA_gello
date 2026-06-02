@@ -221,10 +221,12 @@ class SafeJointActionExecutor:
             self.config.max_joint_delta,
         )
         if self.config.action_mode == "absolute_joint_position":
-            # The Panda gripper command is discrete/thresholded, not a smooth
-            # joint servo target. Forward the policy's absolute gripper value
-            # directly so a value like 0.103 reaches PandaRobot as "open"
-            # instead of being slowly ramped from the current sensor reading.
+            # The training data records an open gripper at about 0.88, while the
+            # deployed SmolVLA policy outputs the inverse convention. Invert the
+            # absolute policy gripper command before sending it to PandaRobot,
+            # so a policy value like 0.103 becomes an open command near 0.897.
+            gripper_target = 1.0 - action[-1]
+            raw_delta[-1] = gripper_target - current[-1]
             clipped_delta[-1] = raw_delta[-1]
         else:
             clipped_delta[-1] = np.clip(
