@@ -13,8 +13,6 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import tyro
-from lerobot.policies import make_pre_post_processors
-from lerobot.policies.utils import build_inference_frame
 
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
@@ -26,7 +24,6 @@ from gello.lerobot.real_robot import (
 )
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
-
 
 
 @dataclass
@@ -42,7 +39,7 @@ class Args:
     base_camera_port: int = 5001
     cameras: Tuple[str, ...] = ("wrist",)
 
-    duration: float = 50.0
+    duration: float = 2.0
     hz: float = 5.0
     execute: bool = False
     require_enter: bool = True
@@ -77,12 +74,6 @@ def main(args: Args) -> None:
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
-    )
-
-    preprocess, postprocess = make_pre_post_processors(
-        bundle.policy.config,
-        args.checkpoint,
-        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
     )
 
     adapter = LeRobotObservationAdapter(
@@ -141,24 +132,7 @@ def main(args: Args) -> None:
         state = adapter.state_from_obs(obs)
 
         with torch.no_grad():
-            # SmolVLA needs a language instruction in the batch.
-            # For this left/right task we use a fixed instruction.
-            if "task" not in batch:
-                batch["task"] = ["Move right when the red block is visible, otherwise move left."]
-                        # SmolVLA needs the LeRobot preprocessor to create observation.language.tokens.
-            batch["task"] = "Move right when the red block is visible, otherwise move left."
-            batch["robot_type"] = ""
-
-            batch = preprocess(batch)
-
-            # The SmolVLA preprocessor may rename the wrist image to camera1.
-            # Our patched policy config expects observation.images.wrist,
-            # so we rename it back before select_action.
-            if "observation.images.camera1" in batch and "observation.images.wrist" not in batch:
-                batch["observation.images.wrist"] = batch.pop("observation.images.camera1")
-
             policy_action = bundle.policy.select_action(batch)
-            policy_action = postprocess(policy_action)
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")

@@ -144,19 +144,12 @@ def main(args: Args) -> None:
             # SmolVLA needs a language instruction in the batch.
             # For this left/right task we use a fixed instruction.
             if "task" not in batch:
-                batch["task"] = ["Move right when the red block is visible, otherwise move left."]
+                batch["task"] = ["Move left when the red block is visible, otherwise move right."]
                         # SmolVLA needs the LeRobot preprocessor to create observation.language.tokens.
-            batch["task"] = "Move right when the red block is visible, otherwise move left."
+            batch["task"] = "Move left when the red block is visible, otherwise move right."
             batch["robot_type"] = ""
 
             batch = preprocess(batch)
-
-            # The SmolVLA preprocessor may rename the wrist image to camera1.
-            # Our patched policy config expects observation.images.wrist,
-            # so we rename it back before select_action.
-            if "observation.images.camera1" in batch and "observation.images.wrist" not in batch:
-                batch["observation.images.wrist"] = batch.pop("observation.images.camera1")
-
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
         safe = executor.make_safe_target(policy_action, state)

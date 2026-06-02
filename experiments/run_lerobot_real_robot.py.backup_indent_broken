@@ -13,8 +13,6 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import tyro
-from lerobot.policies import make_pre_post_processors
-from lerobot.policies.utils import build_inference_frame
 
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
@@ -79,12 +77,6 @@ def main(args: Args) -> None:
         device=args.device,
     )
 
-    preprocess, postprocess = make_pre_post_processors(
-        bundle.policy.config,
-        args.checkpoint,
-        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
-    )
-
     adapter = LeRobotObservationAdapter(
         device=bundle.device,
         camera_keys=args.cameras,
@@ -144,21 +136,68 @@ def main(args: Args) -> None:
             # SmolVLA needs a language instruction in the batch.
             # For this left/right task we use a fixed instruction.
             if "task" not in batch:
-                batch["task"] = ["Move right when the red block is visible, otherwise move left."]
-                        # SmolVLA needs the LeRobot preprocessor to create observation.language.tokens.
-            batch["task"] = "Move right when the red block is visible, otherwise move left."
-            batch["robot_type"] = ""
+                batch["task"] = ["Move left when the red block is visible, otherwise move right."]
+            # SmolVLA needs tokenized language input.
+# Our custom real-robot script bypasses the normal LeRobot tokenizer processor,
+# so we create observation.language.tokens manually here.
+if "observation.language.tokens" not in batch:
+    task = "Move left when the red block is visible, otherwise move right."
 
-            batch = preprocess(batch)
+    tokenizer = None
 
-            # The SmolVLA preprocessor may rename the wrist image to camera1.
-            # Our patched policy config expects observation.images.wrist,
-            # so we rename it back before select_action.
-            if "observation.images.camera1" in batch and "observation.images.wrist" not in batch:
-                batch["observation.images.wrist"] = batch.pop("observation.images.camera1")
+    # Try common SmolVLA / HF tokenizer locations.
+    for attr in [
+        "language_tokenizer",
+        "tokenizer",
+        "processor",
+    ]:
+        if hasattr(bundle.policy, attr):
+            candidate = getattr(bundle.policy, attr)
+            if hasattr(candidate, "__call__"):
+                tokenizer = candidate
+                break
 
-            policy_action = bundle.policy.select_action(batch)
-            policy_action = postprocess(policy_action)
+    if tokenizer is None and hasattr(bundle.policy, "model"):
+        for attr in [
+            "language_tokenizer",
+            "tokenizer",
+            "processor",
+        ]:
+            if hasattr(bundle.policy.model, attr):
+                candidate = getattr(bundle.policy.model, attr)
+                if hasattr(candidate, "__call__"):
+                    tokenizer = candidate
+                    break
+
+    if tokenizer is None:
+        raise RuntimeError(
+            "Could not find tokenizer on SmolVLA policy. "
+            "Print dir(bundle.policy) and search for tokenizer/processor attributes."
+        )
+
+    encoded = tokenizer(
+        [task],
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+    )
+
+    device = next(bundle.policy.parameters()).device
+
+    # Some processors return input_ids, some may return language tokens directly.
+    if "input_ids" in encoded:
+        batch["observation.language.tokens"] = encoded["input_ids"].to(device)
+    elif "observation.language.tokens" in encoded:
+        batch["observation.language.tokens"] = encoded["observation.language.tokens"].to(device)
+    else:
+        raise RuntimeError(f"Tokenizer output has no input_ids. Keys: {list(encoded.keys())}")
+
+    if "attention_mask" in encoded:
+        batch["observation.language.attention_mask"] = encoded["attention_mask"].to(device)
+    elif "observation.language.attention_mask" in encoded:
+        batch["observation.language.attention_mask"] = encoded["observation.language.attention_mask"].to(device)
+
+policy_action = bundle.policy.select_action(batch)
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
