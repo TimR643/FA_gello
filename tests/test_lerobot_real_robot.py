@@ -45,6 +45,29 @@ def test_safe_executor_supports_delta_mode():
     )
 
 
+def test_safe_executor_can_hold_gripper_position():
+    executor = SafeJointActionExecutor(
+        SafetyConfig(
+            max_joint_delta=0.1,
+            max_gripper_delta=0.2,
+            gripper_action_mode="hold",
+        )
+    )
+    state = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8], dtype=np.float32)
+    policy_action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1])
+
+    result = executor.make_safe_target(policy_action, state)
+
+    assert result.raw_delta[-1] == 0.0
+    assert result.clipped_delta[-1] == 0.0
+    assert result.target[-1] == state[-1]
+
+
+def test_safety_config_rejects_unknown_gripper_action_mode():
+    with pytest.raises(ValueError, match="gripper_action_mode"):
+        SafetyConfig(gripper_action_mode="close")
+
+
 def test_observation_adapter_reports_missing_camera_key():
     adapter = LeRobotObservationAdapter(device="cpu", camera_keys=("wrist",))
     obs = {"joint_positions": np.zeros(8, dtype=np.float32)}
