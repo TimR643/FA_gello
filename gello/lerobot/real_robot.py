@@ -42,12 +42,18 @@ class SafetyConfig:
     joint_lower: Tuple[float, ...] = tuple(PANDA_LOWER.tolist())
     joint_upper: Tuple[float, ...] = tuple(PANDA_UPPER.tolist())
     action_mode: str = "absolute_joint_position"
+    gripper_action_mode: str = "invert_absolute"
 
     def __post_init__(self) -> None:
         if self.action_mode not in {"absolute_joint_position", "delta_joint_position"}:
             raise ValueError(
                 "action_mode must be 'absolute_joint_position' or "
                 f"'delta_joint_position', got {self.action_mode!r}"
+            )
+        if self.gripper_action_mode not in {"direct", "invert_absolute"}:
+            raise ValueError(
+                "gripper_action_mode must be 'direct' or 'invert_absolute', "
+                f"got {self.gripper_action_mode!r}"
             )
         if self.max_joint_delta <= 0:
             raise ValueError("max_joint_delta must be positive")
@@ -221,11 +227,16 @@ class SafeJointActionExecutor:
             self.config.max_joint_delta,
         )
         if self.config.action_mode == "absolute_joint_position":
-            # The training data records an open gripper at about 0.88, while the
-            # deployed SmolVLA policy outputs the inverse convention. Invert the
-            # absolute policy gripper command before sending it to PandaRobot,
-            # so a policy value like 0.103 becomes an open command near 0.897.
-            gripper_target = 1.0 - action[-1]
+            if self.config.gripper_action_mode == "invert_absolute":
+                # Some deployed policies use the inverse gripper convention at
+                # inference time. In that case, convert a policy value like 0.103
+                # into an open command near 0.897 before sending it to PandaRobot.
+                gripper_target = 1.0 - action[-1]
+            else:
+                # ACT policies trained on the Panda/GELLO LeRobot stream usually
+                # already use the live robot convention: large values open the
+                # gripper and small values close it.
+                gripper_target = action[-1]
             raw_delta[-1] = gripper_target - current[-1]
             clipped_delta[-1] = raw_delta[-1]
         else:
