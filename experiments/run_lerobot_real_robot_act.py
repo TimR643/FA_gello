@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import tyro
+from lerobot.policies import make_pre_post_processors
 
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
@@ -53,8 +54,8 @@ class Args:
     max_gripper_delta: float = 0.03
     action_mode: str = "absolute_joint_position"
     gripper_action_mode: str = "hold"
-    seed: int = 0
-    deterministic_torch: bool = True
+    seed: Optional[int] = None
+    deterministic_torch: bool = False
 
 
 def _seed_everything(seed: int, *, deterministic_torch: bool) -> None:
@@ -94,13 +95,19 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
 
 
 def main(args: Args) -> None:
-    _seed_everything(args.seed, deterministic_torch=args.deterministic_torch)
+    if args.seed is not None:
+        _seed_everything(args.seed, deterministic_torch=args.deterministic_torch)
 
     bundle = load_lerobot_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
+    )
+    preprocess, postprocess = make_pre_post_processors(
+        bundle.policy.config,
+        args.checkpoint,
+        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
     )
 
     adapter = LeRobotObservationAdapter(
@@ -165,7 +172,9 @@ def main(args: Args) -> None:
         state = adapter.state_from_obs(obs)
 
         with torch.no_grad():
+            batch = preprocess(batch)
             policy_action = bundle.policy.select_action(batch)
+            policy_action = postprocess(policy_action)
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
