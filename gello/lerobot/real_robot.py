@@ -220,11 +220,20 @@ class SafeJointActionExecutor:
             -self.config.max_joint_delta,
             self.config.max_joint_delta,
         )
-        clipped_delta[-1] = np.clip(
-            clipped_delta[-1],
-            -self.config.max_gripper_delta,
-            self.config.max_gripper_delta,
-        )
+        if self.config.action_mode == "absolute_joint_position":
+            # The training data records an open gripper at about 0.88, while the
+            # deployed SmolVLA policy outputs the inverse convention. Invert the
+            # absolute policy gripper command before sending it to PandaRobot,
+            # so a policy value like 0.103 becomes an open command near 0.897.
+            gripper_target = 1.0 - action[-1]
+            raw_delta[-1] = gripper_target - current[-1]
+            clipped_delta[-1] = raw_delta[-1]
+        else:
+            clipped_delta[-1] = np.clip(
+                clipped_delta[-1],
+                -self.config.max_gripper_delta,
+                self.config.max_gripper_delta,
+            )
 
         target = np.clip(current + clipped_delta, self.lower, self.upper).astype(
             np.float32
