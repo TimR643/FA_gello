@@ -9,13 +9,15 @@ asks for success/failure evaluation after every episode.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
+from types import SimpleNamespace
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -23,6 +25,7 @@ import torch
 from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
     LeRobotObservationAdapter,
+    PolicyBundle,
     SafeJointActionExecutor,
     SafetyConfig,
     load_lerobot_policy,
@@ -294,6 +297,120 @@ def make_camera_clients(
     return clients
 
 
+SMOLVLA_IMAGE_FEATURES = (
+    "observation.images.camera1",
+    "observation.images.camera2",
+    "observation.images.camera3",
+    "observation.images.empty_camera_0",
+    "observation.images.empty_camera_1",
+)
+
+
+def _copy_mapping_with_updates(
+    original: Any, updates: Dict[str, Any], remove: Sequence[str] = ()
+) -> Any:
+    """Copy a dict-like metadata mapping while preserving plain dict behavior."""
+
+    copied = copy.deepcopy(dict(original))
+    for key in remove:
+        copied.pop(key, None)
+    copied.update(updates)
+    return copied
+
+
+def _copy_meta_with_features_and_stats(
+    dataset_meta: Any, features: Any, stats: Optional[Any]
+) -> Any:
+    """Return a shallow metadata copy with patched features/stats for make_policy."""
+
+    try:
+        patched = copy.copy(dataset_meta)
+        setattr(patched, "features", features)
+        if stats is not None:
+            setattr(patched, "stats", stats)
+        return patched
+    except Exception:
+        attrs = dict(getattr(dataset_meta, "__dict__", {}))
+        attrs["features"] = features
+        if stats is not None:
+            attrs["stats"] = stats
+        return SimpleNamespace(**attrs)
+
+
+def make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
+    """Patch LeRobot dataset metadata to match the SmolVLA camera config.
+
+    The working rollout scripts fix camera names at runtime before inference.
+    Newer LeRobot versions also validate camera feature names during
+    ``make_policy``.  This helper applies the same wrist->camera1 mapping to the
+    metadata used only for policy construction and pads the empty-camera feature
+    names that SmolVLA expects.  The recorded rollout dataset still keeps its
+    live camera names, e.g. ``observation.images.wrist``.
+    """
+
+    features = getattr(dataset_meta, "features", None)
+    if features is None and isinstance(dataset_meta, Mapping):
+        features = dataset_meta.get("features")
+    if features is None:
+        return dataset_meta
+
+    if "observation.images.wrist" not in features:
+        return dataset_meta
+
+    wrist_feature = copy.deepcopy(features["observation.images.wrist"])
+    feature_updates = {
+        key: copy.deepcopy(wrist_feature) for key in SMOLVLA_IMAGE_FEATURES
+    }
+    patched_features = _copy_mapping_with_updates(
+        features, feature_updates, remove=("observation.images.wrist",)
+    )
+
+    stats = getattr(dataset_meta, "stats", None)
+    if stats is None and isinstance(dataset_meta, Mapping):
+        stats = dataset_meta.get("stats")
+
+    patched_stats = None
+    if stats is not None:
+        stat_updates = {}
+        if "observation.images.wrist" in stats:
+            wrist_stats = copy.deepcopy(stats["observation.images.wrist"])
+            stat_updates = {
+                key: copy.deepcopy(wrist_stats) for key in SMOLVLA_IMAGE_FEATURES
+            }
+        patched_stats = _copy_mapping_with_updates(
+            stats, stat_updates, remove=("observation.images.wrist",)
+        )
+
+    LOGGER.info(
+        "Patched SmolVLA policy metadata image keys: removed observation.images.wrist; added %s",
+        list(SMOLVLA_IMAGE_FEATURES),
+    )
+    return _copy_meta_with_features_and_stats(
+        dataset_meta, patched_features, patched_stats
+    )
+
+
+def load_smolvla_policy_with_patched_meta(
+    *, checkpoint: str, dataset_root: str, repo_id: str, device: Optional[str] = None
+) -> PolicyBundle:
+    """Load SmolVLA with dataset metadata patched like the runtime camera mapping."""
+
+    import torch
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import make_policy
+
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
+    cfg = PreTrainedConfig.from_pretrained(checkpoint)
+    cfg.device = resolved_device
+    policy_meta = make_smolvla_dataset_meta(dataset.meta)
+    policy = make_policy(cfg=cfg, ds_meta=policy_meta)
+    policy.to(resolved_device)
+    policy.eval()
+    return PolicyBundle(policy=policy, dataset=dataset, device=resolved_device)
+
+
 def make_policy_processors(
     args: argparse.Namespace, policy: Any, device: str
 ) -> Tuple[Callable[[Dict[str, Any]], Dict[str, Any]], Callable[[Any], Any]]:
@@ -329,6 +446,8 @@ def make_policy_processors(
         camera1 = batch["observation.images.camera1"]
         batch.setdefault("observation.images.camera2", torch.zeros_like(camera1))
         batch.setdefault("observation.images.camera3", torch.zeros_like(camera1))
+        batch.setdefault("observation.images.empty_camera_0", torch.zeros_like(camera1))
+        batch.setdefault("observation.images.empty_camera_1", torch.zeros_like(camera1))
         return preprocess(batch)
 
     return transform, postprocess
@@ -337,7 +456,15 @@ def make_policy_processors(
 def load_policy_for_args(
     args: argparse.Namespace, policy_dataset_root: str, policy_repo_id: str
 ) -> Any:
-    """Load policy exactly like the working real-robot rollout scripts."""
+    """Load policy, patching SmolVLA camera metadata when requested."""
+
+    if args.smolvla:
+        return load_smolvla_policy_with_patched_meta(
+            checkpoint=args.path,
+            dataset_root=policy_dataset_root,
+            repo_id=policy_repo_id,
+            device=args.device,
+        )
 
     return load_lerobot_policy(
         checkpoint=args.path,
