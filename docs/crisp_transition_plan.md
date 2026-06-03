@@ -39,8 +39,10 @@ Das Skript prüft ohne CRISP-Installation:
 - `action` hat die erwartete Panda/GELLO-Shape `(8,)`.
 - `observation.images.<camera>` ist im Dataset deklariert.
 - Metadaten-FPS passt zur erwarteten Policy-Frequenz.
-- Falls `pyarrow` installiert ist: Parquet-Frames werden stichprobenartig
-  geprüft, inklusive Timestamp-FPS und Gripper-State/Action-Korrelation.
+- Falls ein Parquet-Reader verfügbar ist (`pyarrow` bevorzugt, sonst
+  `pandas.read_parquet`): Parquet-Frames werden stichprobenartig geprüft,
+  inklusive State-/Action-Längen, NaN/Inf, Timestamp-FPS, Dimensionsbereichen
+  und Gripper-State/Action-Korrelation.
 
 ## Exakter Testplan
 
@@ -53,7 +55,17 @@ python scripts/validate_lerobot_crisp_ready.py \
   --dataset-root "$DATASET_ROOT" \
   --expected-camera wrist \
   --expected-fps 10 \
-  --max-parquet-files 5
+  --max-parquet-files 5 \
+  --require-frame-inspection
+```
+
+Falls du nur die Meldung `No parquet reader is installed` oder `pyarrow is not
+installed` siehst, hast du bisher nur die Metadaten geprüft. Installiere dann im
+gleichen Python-/Conda-Environment einen Parquet-Reader und wiederhole den
+Check:
+
+```bash
+python3 -m pip install pyarrow
 ```
 
 Bewertung:
@@ -145,7 +157,7 @@ Prüfe dabei:
    Fehler.
 2. **FPS-Mismatch:** Deine `run_env.py`-Control-Loop kann mit 100 Hz laufen,
    während das Dataset als 10 FPS deklariert ist. Das Skript vergleicht
-   Metadaten-FPS und, falls möglich, Timestamp-FPS.
+   Metadaten-FPS und, mit Parquet-Reader, Timestamp-FPS.
 3. **Kamera-Rename:** SmolVLA erwartet bei dir ggf. `camera1`, während dein
    Dataset ursprünglich `wrist` enthält.
 4. **Action-Modus:** Deine aktuellen GELLO-Actions sind absolute Joint-Ziele.

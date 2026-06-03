@@ -11,8 +11,10 @@ rollout/controller bridge:
 * Optional parquet inspection estimates real timestamp fps and gripper
   state/action consistency.
 
-It does not require CRISP to be installed. If ``pyarrow`` is available it will
-also inspect frame parquet files; otherwise it still performs metadata checks.
+It does not require CRISP to be installed. Frame-level inspection uses
+``pyarrow`` when available, or ``pandas.read_parquet`` as a fallback. If neither
+can read parquet files, the metadata checks still run and the report explains how
+to enable the deeper checks.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 DEFAULT_EXPECTED_CAMERAS = ("wrist",)
 DEFAULT_EXPECTED_STATE_DIM = 8
@@ -62,6 +64,19 @@ class CheckReport:
             "failures": self.failures,
             "details": self.details,
         }
+
+
+@dataclass(frozen=True)
+class ParquetRows:
+    """Small reader-independent view of a sampled parquet file."""
+
+    columns: set[str]
+    states: list[Any]
+    actions: list[Any]
+    timestamps: list[Any]
+
+
+ParquetReader = Callable[[Path], ParquetRows]
 
 
 def load_info(dataset_root: Path) -> Mapping[str, Any]:
@@ -129,62 +144,197 @@ def pearson(xs: Sequence[float], ys: Sequence[float]) -> float | None:
     return sum(x * y for x, y in zip(dx, dy)) / math.sqrt(var_x * var_y)
 
 
+def has_module(module_name: str) -> bool:
+    parent, _, _ = module_name.partition(".")
+    if importlib.util.find_spec(parent) is None:
+        return False
+    return importlib.util.find_spec(module_name) is not None
+
+
+def read_parquet_with_pyarrow(parquet_path: Path) -> ParquetRows:
+    pq = importlib.import_module("pyarrow.parquet")
+    table = pq.read_table(parquet_path)
+    columns = set(table.column_names)
+    return ParquetRows(
+        columns=columns,
+        states=table["observation.state"].to_pylist()
+        if "observation.state" in columns
+        else [],
+        actions=table["action"].to_pylist() if "action" in columns else [],
+        timestamps=table["timestamp"].to_pylist() if "timestamp" in columns else [],
+    )
+
+
+def read_parquet_with_pandas(parquet_path: Path) -> ParquetRows:
+    pandas = importlib.import_module("pandas")
+    dataframe = pandas.read_parquet(parquet_path)
+    columns = set(dataframe.columns)
+    return ParquetRows(
+        columns=columns,
+        states=dataframe["observation.state"].tolist()
+        if "observation.state" in columns
+        else [],
+        actions=dataframe["action"].tolist() if "action" in columns else [],
+        timestamps=dataframe["timestamp"].tolist() if "timestamp" in columns else [],
+    )
+
+
+def select_parquet_reader(report: CheckReport) -> tuple[str | None, ParquetReader | None]:
+    if has_module("pyarrow.parquet"):
+        return "pyarrow", read_parquet_with_pyarrow
+    if importlib.util.find_spec("pandas") is not None:
+        report.warn(
+            "pyarrow is not installed; trying pandas.read_parquet fallback. If this "
+            "fails, install pyarrow in the same environment."
+        )
+        return "pandas", read_parquet_with_pandas
+    report.warn(
+        "No parquet reader is installed; frame-level checks were skipped. Install "
+        "pyarrow in the same environment, for example: python3 -m pip install pyarrow"
+    )
+    return None, None
+
+
+def update_dimension_ranges(ranges: list[list[float]], values: Sequence[float]) -> None:
+    for idx, value in enumerate(values):
+        while len(ranges) <= idx:
+            ranges.append([math.inf, -math.inf])
+        ranges[idx][0] = min(ranges[idx][0], value)
+        ranges[idx][1] = max(ranges[idx][1], value)
+
+
+def summarize_ranges(ranges: list[list[float]]) -> list[list[float]]:
+    return [[round(low, 6), round(high, 6)] for low, high in ranges]
+
+
+def inspect_parquet_rows(
+    rows: ParquetRows,
+    parquet_path: Path,
+    *,
+    expected_state_dim: int,
+    expected_action_dim: int,
+    state_gripper: list[float],
+    action_gripper: list[float],
+    all_timestamps: list[float],
+    state_ranges: list[list[float]],
+    action_ranges: list[list[float]],
+    report: CheckReport,
+) -> int:
+    if "observation.state" not in rows.columns:
+        report.fail(f"{parquet_path} is missing column observation.state")
+        return 0
+    if "action" not in rows.columns:
+        report.fail(f"{parquet_path} is missing column action")
+        return 0
+
+    sampled_rows = 0
+    for row_index, (state, action) in enumerate(zip(rows.states, rows.actions)):
+        state_values = flatten_numeric(state)
+        action_values = flatten_numeric(action)
+        if len(state_values) != expected_state_dim:
+            report.fail(
+                f"{parquet_path} row {row_index}: observation.state has length "
+                f"{len(state_values)}, expected {expected_state_dim}"
+            )
+        if len(action_values) != expected_action_dim:
+            report.fail(
+                f"{parquet_path} row {row_index}: action has length "
+                f"{len(action_values)}, expected {expected_action_dim}"
+            )
+        if not all(math.isfinite(value) for value in state_values):
+            report.fail(f"{parquet_path} row {row_index}: observation.state has NaN/Inf")
+        if not all(math.isfinite(value) for value in action_values):
+            report.fail(f"{parquet_path} row {row_index}: action has NaN/Inf")
+
+        update_dimension_ranges(state_ranges, state_values)
+        update_dimension_ranges(action_ranges, action_values)
+        if len(state_values) >= expected_state_dim:
+            state_gripper.append(state_values[expected_state_dim - 1])
+        if len(action_values) >= expected_action_dim:
+            action_gripper.append(action_values[expected_action_dim - 1])
+        sampled_rows += 1
+
+    for timestamp in rows.timestamps:
+        values = flatten_numeric(timestamp)
+        if values:
+            all_timestamps.append(values[0])
+
+    return sampled_rows
+
+
 def inspect_parquets(
     dataset_root: Path,
     *,
     max_files: int,
+    expected_state_dim: int,
+    expected_action_dim: int,
     expected_fps: float,
     fps_tolerance: float,
+    require_frame_inspection: bool,
     report: CheckReport,
 ) -> None:
-    if importlib.util.find_spec("pyarrow") is None:
-        report.warn("pyarrow is not installed; skipped frame parquet inspection")
-        return
-    if importlib.util.find_spec("pyarrow.parquet") is None:
-        report.warn("pyarrow.parquet is not available; skipped frame parquet inspection")
-        return
-
-    pq = importlib.import_module("pyarrow.parquet")
     parquet_files = list_episode_parquets(dataset_root, max_files=max_files)
     report.details["inspected_parquet_files"] = [str(path) for path in parquet_files]
     if not parquet_files:
-        report.warn("No parquet files found below data/; only metadata was checked")
+        message = "No parquet files found below data/; only metadata was checked"
+        if require_frame_inspection:
+            report.fail(message)
+        else:
+            report.warn(message)
+        return
+
+    reader_name, reader = select_parquet_reader(report)
+    report.details["parquet_reader"] = reader_name
+    if reader is None:
+        if require_frame_inspection:
+            report.fail("Frame-level parquet inspection is required but no reader is available")
         return
 
     state_gripper: list[float] = []
     action_gripper: list[float] = []
     all_timestamps: list[float] = []
+    state_ranges: list[list[float]] = []
+    action_ranges: list[list[float]] = []
     sampled_rows = 0
+    read_failures = 0
 
     for parquet_path in parquet_files:
-        table = pq.read_table(parquet_path)
-        columns = set(table.column_names)
-        if "observation.state" not in columns:
-            report.fail(f"{parquet_path} is missing column observation.state")
+        try:
+            rows = reader(parquet_path)
+        except Exception as exc:
+            read_failures += 1
+            report.warn(f"Could not read {parquet_path} with {reader_name}: {exc}")
             continue
-        if "action" not in columns:
-            report.fail(f"{parquet_path} is missing column action")
-            continue
-
-        states = table["observation.state"].to_pylist()
-        actions = table["action"].to_pylist()
-        timestamps = table["timestamp"].to_pylist() if "timestamp" in columns else []
-
-        for state, action in zip(states, actions):
-            state_values = flatten_numeric(state)
-            action_values = flatten_numeric(action)
-            if len(state_values) >= DEFAULT_EXPECTED_STATE_DIM:
-                state_gripper.append(state_values[DEFAULT_EXPECTED_STATE_DIM - 1])
-            if len(action_values) >= DEFAULT_EXPECTED_ACTION_DIM:
-                action_gripper.append(action_values[DEFAULT_EXPECTED_ACTION_DIM - 1])
-            sampled_rows += 1
-
-        for timestamp in timestamps:
-            values = flatten_numeric(timestamp)
-            if values:
-                all_timestamps.append(values[0])
+        sampled_rows += inspect_parquet_rows(
+            rows,
+            parquet_path,
+            expected_state_dim=expected_state_dim,
+            expected_action_dim=expected_action_dim,
+            state_gripper=state_gripper,
+            action_gripper=action_gripper,
+            all_timestamps=all_timestamps,
+            state_ranges=state_ranges,
+            action_ranges=action_ranges,
+            report=report,
+        )
 
     report.details["sampled_rows"] = sampled_rows
+    report.details["parquet_read_failures"] = read_failures
+    if read_failures and require_frame_inspection:
+        report.fail("Frame-level parquet inspection is required but at least one file could not be read")
+    if sampled_rows == 0:
+        message = "No frame rows were inspected; data-level problems cannot be ruled out"
+        if require_frame_inspection:
+            report.fail(message)
+        else:
+            report.warn(message)
+        return
+
+    report.pass_(f"Inspected {sampled_rows} frame rows with {reader_name}")
+    if state_ranges:
+        report.details["state_dim_ranges"] = summarize_ranges(state_ranges)
+    if action_ranges:
+        report.details["action_dim_ranges"] = summarize_ranges(action_ranges)
     if state_gripper:
         report.details["state_gripper_min"] = min(state_gripper)
         report.details["state_gripper_max"] = max(state_gripper)
@@ -297,6 +447,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-fps", type=float, default=DEFAULT_EXPECTED_FPS)
     parser.add_argument("--fps-tolerance", type=float, default=1.0)
     parser.add_argument("--max-parquet-files", type=int, default=3)
+    parser.add_argument(
+        "--require-frame-inspection",
+        action="store_true",
+        help="Fail if parquet frame rows cannot be inspected. Use this before hardware tests.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON report")
     return parser
 
@@ -323,8 +478,11 @@ def main() -> int:
     inspect_parquets(
         dataset_root,
         max_files=args.max_parquet_files,
+        expected_state_dim=args.expected_state_dim,
+        expected_action_dim=args.expected_action_dim,
         expected_fps=args.expected_fps,
         fps_tolerance=args.fps_tolerance,
+        require_frame_inspection=args.require_frame_inspection,
         report=report,
     )
 

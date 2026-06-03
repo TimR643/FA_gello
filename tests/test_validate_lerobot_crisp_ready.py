@@ -6,7 +6,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.validate_lerobot_crisp_ready import (
     CheckReport,
+    ParquetRows,
     flatten_numeric,
+    inspect_parquet_rows,
+    inspect_parquets,
     load_info,
     pearson,
     validate_metadata,
@@ -83,3 +86,80 @@ def test_pearson_detects_inverted_gripper_signal():
 
     assert corr is not None
     assert corr < -0.9
+
+
+def test_parquet_row_inspection_records_ranges_and_timestamps():
+    report = CheckReport()
+    state_gripper = []
+    action_gripper = []
+    timestamps = []
+    state_ranges = []
+    action_ranges = []
+    rows = ParquetRows(
+        columns={"observation.state", "action", "timestamp"},
+        states=[[0, 1, 2, 3, 4, 5, 6, 0], [1, 2, 3, 4, 5, 6, 7, 1]],
+        actions=[[0, 1, 2, 3, 4, 5, 6, 0], [1, 2, 3, 4, 5, 6, 7, 1]],
+        timestamps=[0.0, 0.1],
+    )
+
+    sampled = inspect_parquet_rows(
+        rows,
+        Path("episode.parquet"),
+        expected_state_dim=8,
+        expected_action_dim=8,
+        state_gripper=state_gripper,
+        action_gripper=action_gripper,
+        all_timestamps=timestamps,
+        state_ranges=state_ranges,
+        action_ranges=action_ranges,
+        report=report,
+    )
+
+    assert sampled == 2
+    assert not report.failures
+    assert state_gripper == [0, 1]
+    assert action_gripper == [0, 1]
+    assert timestamps == [0.0, 0.1]
+    assert state_ranges[-1] == [0, 1]
+
+
+def test_parquet_row_inspection_detects_bad_action_length():
+    report = CheckReport()
+    rows = ParquetRows(
+        columns={"observation.state", "action"},
+        states=[[0, 1, 2, 3, 4, 5, 6, 0]],
+        actions=[[0, 1, 2]],
+        timestamps=[],
+    )
+
+    inspect_parquet_rows(
+        rows,
+        Path("episode.parquet"),
+        expected_state_dim=8,
+        expected_action_dim=8,
+        state_gripper=[],
+        action_gripper=[],
+        all_timestamps=[],
+        state_ranges=[],
+        action_ranges=[],
+        report=report,
+    )
+
+    assert any("action has length 3" in item for item in report.failures)
+
+
+def test_require_frame_inspection_fails_without_parquet_files(tmp_path):
+    report = CheckReport()
+
+    inspect_parquets(
+        tmp_path,
+        max_files=3,
+        expected_state_dim=8,
+        expected_action_dim=8,
+        expected_fps=10,
+        fps_tolerance=1,
+        require_frame_inspection=True,
+        report=report,
+    )
+
+    assert any("No parquet files" in item for item in report.failures)
