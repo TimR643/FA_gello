@@ -237,6 +237,47 @@ def find_pretrained_model() -> str:
     )
 
 
+def resolve_pretrained_path(path: str) -> str:
+    """Resolve a train output/checkpoint directory to a LeRobot pretrained_model path."""
+
+    requested = Path(path).expanduser()
+    candidates = [requested, requested / "pretrained_model"]
+
+    checkpoints_dir = requested / "checkpoints"
+    if checkpoints_dir.is_dir():
+        checkpoint_models = [
+            checkpoint / "pretrained_model"
+            for checkpoint in checkpoints_dir.iterdir()
+            if (checkpoint / "pretrained_model").is_dir()
+        ]
+
+        def checkpoint_sort_key(model_path: Path) -> Tuple[int, str]:
+            checkpoint_name = model_path.parent.name
+            return (
+                int(checkpoint_name) if checkpoint_name.isdigit() else -1,
+                checkpoint_name,
+            )
+
+        candidates.extend(
+            sorted(checkpoint_models, key=checkpoint_sort_key, reverse=True)
+        )
+
+    for candidate in candidates:
+        if (candidate / "config.json").is_file():
+            resolved = str(candidate)
+            if resolved != path:
+                LOGGER.info("Resolved --path %s to pretrained model %s", path, resolved)
+            return resolved
+
+    searched = "\n".join(f"  - {candidate}" for candidate in candidates)
+    raise FileNotFoundError(
+        "Could not find a LeRobot policy config.json for --path. Pass the exact "
+        ".../checkpoints/<step>/pretrained_model directory, or pass a train output "
+        "directory containing checkpoints/*/pretrained_model/config.json.\n"
+        f"Requested --path: {requested}\nSearched:\n{searched}"
+    )
+
+
 def make_camera_clients(
     *,
     camera_host: str,
@@ -436,7 +477,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set the logger level",
     )
     parser.add_argument(
-        "--path", type=str, default=None, help="Path to the pretrained LeRobot model"
+        "--path",
+        type=str,
+        default=None,
+        help="Path to pretrained_model or a train output directory containing checkpoints/*/pretrained_model",
     )
     parser.add_argument(
         "--env-config",
@@ -598,6 +642,7 @@ def main() -> None:
     if args.path is None:
         LOGGER.info("No path provided. Searching for models in 'outputs/train'.")
         args.path = find_pretrained_model()
+    args.path = resolve_pretrained_path(args.path)
 
     policy_repo_id = args.policy_repo_id or args.repo_id
     policy_dataset_root = args.policy_dataset_root or args.lerobot_root
@@ -619,6 +664,31 @@ def main() -> None:
     writer: Optional[LeRobotDatasetWriter] = None
     bundle = None
     try:
+        LOGGER.info("Loading policy.")
+        bundle = load_policy_for_args(args, policy_dataset_root, policy_repo_id)
+        batch_transform, action_transform = make_policy_processors(
+            args, bundle.policy, bundle.device
+        )
+        adapter = LeRobotObservationAdapter(
+            device=bundle.device,
+            camera_keys=args.cameras,
+            expected_state_dim=args.expected_state_dim,
+            expected_image_shape=(
+                args.expected_image_height,
+                args.expected_image_width,
+                3,
+            ),
+        )
+        if not args.smolvla:
+            validate_policy_batch_keys(adapter, bundle.dataset.meta)
+        executor = SafeJointActionExecutor(
+            SafetyConfig(
+                max_joint_delta=args.max_joint_delta,
+                max_gripper_delta=args.max_gripper_delta,
+                action_mode=args.action_mode,
+            )
+        )
+
         LOGGER.info(
             "Connecting to robot backend %s (robot_host=%s, robot_port=%s, robot_ip=%s).",
             args.robot_backend,
@@ -655,31 +725,6 @@ def main() -> None:
             fps=args.fps,
         )
         recording_manager.wait_until_ready()
-
-        LOGGER.info("Loading policy.")
-        bundle = load_policy_for_args(args, policy_dataset_root, policy_repo_id)
-        batch_transform, action_transform = make_policy_processors(
-            args, bundle.policy, bundle.device
-        )
-        adapter = LeRobotObservationAdapter(
-            device=bundle.device,
-            camera_keys=args.cameras,
-            expected_state_dim=args.expected_state_dim,
-            expected_image_shape=(
-                args.expected_image_height,
-                args.expected_image_width,
-                3,
-            ),
-        )
-        if not args.smolvla:
-            validate_policy_batch_keys(adapter, bundle.dataset.meta)
-        executor = SafeJointActionExecutor(
-            SafetyConfig(
-                max_joint_delta=args.max_joint_delta,
-                max_gripper_delta=args.max_gripper_delta,
-                action_mode=args.action_mode,
-            )
-        )
 
         LOGGER.info("Homing robot before starting with recording.")
         home_robot(env)
