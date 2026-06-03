@@ -294,36 +294,6 @@ def make_camera_clients(
     return clients
 
 
-def load_lerobot_policy_without_dataset_meta(
-    *, checkpoint: str, dataset_root: str, repo_id: str, device: Optional[str] = None
-) -> Any:
-    """Load a LeRobot policy without binding checkpoint inputs to dataset metadata.
-
-    SmolVLA checkpoints can have camera names such as camera1/camera2/camera3
-    while the local dataset metadata still contains wrist/base.  In that case
-    LeRobot should construct the policy from the checkpoint config only.  The
-    dataset is still opened so the returned bundle has the same shape as
-    ``load_lerobot_policy`` and downstream code can keep using ``bundle.dataset``.
-    """
-
-    import torch
-    from lerobot.configs.policies import PreTrainedConfig
-    from lerobot.datasets import LeRobotDataset
-    from lerobot.policies.factory import make_policy
-
-    from gello.lerobot.real_robot import PolicyBundle
-
-    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
-    cfg = PreTrainedConfig.from_pretrained(checkpoint)
-    if hasattr(cfg, "device"):
-        cfg.device = resolved_device
-    policy = make_policy(cfg=cfg, ds_meta=None)
-    policy.to(resolved_device)
-    policy.eval()
-    return PolicyBundle(policy=policy, dataset=dataset, device=resolved_device)
-
-
 def make_policy_processors(
     args: argparse.Namespace, policy: Any, device: str
 ) -> Tuple[Callable[[Dict[str, Any]], Dict[str, Any]], Callable[[Any], Any]]:
@@ -367,13 +337,8 @@ def make_policy_processors(
 def load_policy_for_args(
     args: argparse.Namespace, policy_dataset_root: str, policy_repo_id: str
 ) -> Any:
-    if args.smolvla:
-        return load_lerobot_policy_without_dataset_meta(
-            checkpoint=args.path,
-            dataset_root=policy_dataset_root,
-            repo_id=policy_repo_id,
-            device=args.device,
-        )
+    """Load policy exactly like the working real-robot rollout scripts."""
+
     return load_lerobot_policy(
         checkpoint=args.path,
         dataset_root=policy_dataset_root,
