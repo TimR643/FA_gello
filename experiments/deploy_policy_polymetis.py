@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -28,9 +28,9 @@ from gello.lerobot.real_robot import (
     load_lerobot_policy,
     validate_policy_batch_keys,
 )
-from gello.robots.panda import PandaRobot
 from gello.utils.control_utils import LeRobotDatasetWriter
 from gello.zmq_core.camera_node import ZMQClientCamera
+from gello.zmq_core.robot_node import ZMQClientRobot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -253,6 +253,94 @@ def make_camera_clients(
     return clients
 
 
+def load_lerobot_policy_without_dataset_meta(
+    *, checkpoint: str, dataset_root: str, repo_id: str, device: Optional[str] = None
+) -> Any:
+    """Load a LeRobot policy without binding checkpoint inputs to dataset metadata.
+
+    SmolVLA checkpoints can have camera names such as camera1/camera2/camera3
+    while the local dataset metadata still contains wrist/base.  In that case
+    LeRobot should construct the policy from the checkpoint config only.  The
+    dataset is still opened so the returned bundle has the same shape as
+    ``load_lerobot_policy`` and downstream code can keep using ``bundle.dataset``.
+    """
+
+    import torch
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import make_policy
+
+    from gello.lerobot.real_robot import PolicyBundle
+
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
+    cfg = PreTrainedConfig.from_pretrained(checkpoint)
+    if hasattr(cfg, "device"):
+        cfg.device = resolved_device
+    policy = make_policy(cfg=cfg, ds_meta=None)
+    policy.to(resolved_device)
+    policy.eval()
+    return PolicyBundle(policy=policy, dataset=dataset, device=resolved_device)
+
+
+def make_policy_processors(
+    args: argparse.Namespace, policy: Any, device: str
+) -> Tuple[Callable[[Dict[str, Any]], Dict[str, Any]], Callable[[Any], Any]]:
+    """Return runtime pre/post-processors needed around policy.select_action."""
+
+    if not args.smolvla:
+        return lambda batch: batch, lambda action: action
+
+    from lerobot.policies import make_pre_post_processors
+
+    preprocess, postprocess = make_pre_post_processors(
+        policy.config,
+        args.path,
+        preprocessor_overrides={"device_processor": {"device": str(device)}},
+    )
+
+    def transform(batch: Dict[str, Any]) -> Dict[str, Any]:
+        batch["task"] = [args.task]
+        batch["robot_type"] = [""]
+
+        if (
+            "observation.images.wrist" in batch
+            and "observation.images.camera1" not in batch
+        ):
+            batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
+
+        if "observation.images.camera1" not in batch:
+            raise KeyError(
+                "Missing observation.images.camera1 after wrist->camera1 mapping. "
+                f"Available keys: {sorted(batch.keys())}"
+            )
+
+        camera1 = batch["observation.images.camera1"]
+        batch.setdefault("observation.images.camera2", torch.zeros_like(camera1))
+        batch.setdefault("observation.images.camera3", torch.zeros_like(camera1))
+        return preprocess(batch)
+
+    return transform, postprocess
+
+
+def load_policy_for_args(
+    args: argparse.Namespace, policy_dataset_root: str, policy_repo_id: str
+) -> Any:
+    if args.smolvla:
+        return load_lerobot_policy_without_dataset_meta(
+            checkpoint=args.path,
+            dataset_root=policy_dataset_root,
+            repo_id=policy_repo_id,
+            device=args.device,
+        )
+    return load_lerobot_policy(
+        checkpoint=args.path,
+        dataset_root=policy_dataset_root,
+        repo_id=policy_repo_id,
+        device=args.device,
+    )
+
+
 def reset_policy(policy: Any) -> None:
     if hasattr(policy, "reset"):
         policy.reset()
@@ -270,6 +358,28 @@ def close_robot(env: RobotEnv) -> None:
     robot = env.robot()
     if hasattr(robot, "robot") and hasattr(robot.robot, "terminate_current_policy"):
         robot.robot.terminate_current_policy()
+    if hasattr(robot, "close"):
+        robot.close()
+
+
+def make_robot_client(args: argparse.Namespace) -> Any:
+    """Create the robot connection for the selected deployment topology.
+
+    The default is ``zmq`` because this project usually runs LeRobot inference on
+    the HPC while the realtime laptop owns Polymetis and exposes the Panda over
+    a ZMQ robot server.  ``polymetis`` remains available for the rare case where
+    this script is executed directly on the realtime laptop.
+    """
+
+    if args.robot_backend == "zmq":
+        return ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+
+    if args.robot_backend == "polymetis":
+        from gello.robots.panda import PandaRobot
+
+        return PandaRobot(robot_ip=args.robot_ip)
+
+    raise ValueError(f"Unsupported robot backend: {args.robot_backend}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -371,10 +481,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dataset repo_id whose metadata should be used to load the policy; defaults to --repo-id",
     )
     parser.add_argument(
+        "--robot-backend",
+        type=str,
+        choices=["zmq", "polymetis"],
+        default="zmq",
+        help="Robot connection to use. Use 'zmq' on the HPC and 'polymetis' only on the realtime laptop.",
+    )
+    parser.add_argument(
+        "--robot-host",
+        type=str,
+        default="127.0.0.1",
+        help="Host for the ZMQ robot server or SSH tunnel endpoint",
+    )
+    parser.add_argument(
+        "--robot-port", type=int, default=6001, help="ZMQ robot server port"
+    )
+    parser.add_argument(
         "--robot-ip",
         type=str,
         default="100.97.47.74",
-        help="Polymetis robot server IP address",
+        help="Polymetis robot server IP address; only used with --robot-backend polymetis",
+    )
+    parser.add_argument(
+        "--smolvla",
+        action="store_true",
+        default=False,
+        help="Enable SmolVLA runtime preprocessing: wrist->camera1 and zero camera2/camera3.",
     )
     parser.add_argument(
         "--camera-host",
@@ -487,8 +619,14 @@ def main() -> None:
     writer: Optional[LeRobotDatasetWriter] = None
     bundle = None
     try:
-        LOGGER.info("Connecting to Polymetis Panda at %s.", args.robot_ip)
-        robot = PandaRobot(robot_ip=args.robot_ip)
+        LOGGER.info(
+            "Connecting to robot backend %s (robot_host=%s, robot_port=%s, robot_ip=%s).",
+            args.robot_backend,
+            args.robot_host,
+            args.robot_port,
+            args.robot_ip,
+        )
+        robot = make_robot_client(args)
         env = RobotEnv(
             robot,
             control_rate_hz=args.fps,
@@ -519,11 +657,9 @@ def main() -> None:
         recording_manager.wait_until_ready()
 
         LOGGER.info("Loading policy.")
-        bundle = load_lerobot_policy(
-            checkpoint=args.path,
-            dataset_root=policy_dataset_root,
-            repo_id=policy_repo_id,
-            device=args.device,
+        bundle = load_policy_for_args(args, policy_dataset_root, policy_repo_id)
+        batch_transform, action_transform = make_policy_processors(
+            args, bundle.policy, bundle.device
         )
         adapter = LeRobotObservationAdapter(
             device=bundle.device,
@@ -535,7 +671,8 @@ def main() -> None:
                 3,
             ),
         )
-        validate_policy_batch_keys(adapter, bundle.dataset.meta)
+        if not args.smolvla:
+            validate_policy_batch_keys(adapter, bundle.dataset.meta)
         executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=args.max_joint_delta,
@@ -552,7 +689,9 @@ def main() -> None:
             batch = adapter.make_batch(obs)
             state = adapter.state_from_obs(obs)
             with torch.no_grad():
+                batch = batch_transform(batch)
                 policy_action = bundle.policy.select_action(batch)
+                policy_action = action_transform(policy_action)
             safe = executor.make_safe_target(policy_action, state)
             if args.execute:
                 env.step(safe.target)
