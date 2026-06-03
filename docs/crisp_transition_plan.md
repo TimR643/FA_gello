@@ -41,8 +41,8 @@ Das Skript prüft ohne CRISP-Installation:
 - Metadaten-FPS passt zur erwarteten Policy-Frequenz.
 - Falls ein Parquet-Reader verfügbar ist (`pyarrow` bevorzugt, sonst
   `pandas.read_parquet`): Parquet-Frames werden stichprobenartig geprüft,
-  inklusive State-/Action-Längen, NaN/Inf, Timestamp-FPS, Dimensionsbereichen
-  und Gripper-State/Action-Korrelation.
+  inklusive State-/Action-Längen, NaN/Inf, Timestamp-FPS, Dimensionsbereichen,
+  Gripper-Range-/Offset-Vergleich und Gripper-State/Action-Korrelation.
 
 ## Exakter Testplan
 
@@ -73,8 +73,11 @@ Bewertung:
 - `FAIL` bedeutet: Datensatz vor CRISP korrigieren.
 - `WARN` bedeutet: nicht zwingend kaputt, aber für den Hardware-Test kritisch
   prüfen.
-- Eine besonders wichtige Warnung/Fehlermeldung ist negative
-  Gripper-Korrelation. Das deutet auf `open=1` vs. `open=0`-Vertauschung hin.
+- Besonders wichtige Gripper-Fehler sind nicht überlappende State-/Action-Ranges
+  oder stark getrennte Mittelwerte. Das deutet auf unterschiedliche Skalierung,
+  Offsets oder `open=1` vs. `open=0`-Vertauschung hin. Wenn die Gripper-Variation
+  fast konstant ist, ist eine Korrelation nicht aussagekräftig; dann zählen die
+  ausgegebenen Ranges und Gaps.
 
 ### 2. CRISP-/ROS2-Umgebung aufsetzen
 
@@ -152,9 +155,11 @@ Prüfe dabei:
 
 ## Bekannte Risiken aus deinem aktuellen Stack
 
-1. **Gripper-Konvention:** GELLO-Gripper und Panda-State können invertiert sein.
-   Das Prüfskript meldet eine stark negative State/Action-Korrelation als
-   Fehler.
+1. **Gripper-Konvention:** GELLO-Gripper und Panda-State können invertiert oder
+   unterschiedlich skaliert sein. Das Prüfskript meldet nicht überlappende
+   Gripper-Ranges, große Mittelwert-Gaps und stark negative Korrelationen als
+   Fehler. Fast konstante Gripper-Signale werden nicht mehr als plausible
+   Korrelation bewertet.
 2. **FPS-Mismatch:** Deine `run_env.py`-Control-Loop kann mit 100 Hz laufen,
    während das Dataset als 10 FPS deklariert ist. Das Skript vergleicht
    Metadaten-FPS und, mit Parquet-Reader, Timestamp-FPS.

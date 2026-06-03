@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.validate_lerobot_crisp_ready import (
     CheckReport,
     ParquetRows,
+    evaluate_gripper_consistency,
     flatten_numeric,
     inspect_parquet_rows,
     inspect_parquets,
@@ -163,3 +164,25 @@ def test_require_frame_inspection_fails_without_parquet_files(tmp_path):
     )
 
     assert any("No parquet files" in item for item in report.failures)
+
+
+def test_gripper_consistency_flags_non_overlapping_ranges_like_user_dataset():
+    report = CheckReport()
+    state_gripper = [0.886529, 0.886544, 0.886535]
+    action_gripper = [0.091064, 0.108643, 0.1]
+
+    evaluate_gripper_consistency(state_gripper, action_gripper, report)
+
+    assert any("numeric ranges do not overlap" in item for item in report.failures)
+    assert any("too small for correlation" in item for item in report.warnings)
+    assert "state_action_gripper_range_gap" in report.details
+
+
+def test_gripper_consistency_does_not_pass_correlation_for_constant_signals():
+    report = CheckReport()
+
+    evaluate_gripper_consistency([0.5, 0.5, 0.5], [0.5, 0.5, 0.5], report)
+
+    assert not report.failures
+    assert any("too small for correlation" in item for item in report.warnings)
+    assert not any("correlation looks plausible" in item for item in report.passes)

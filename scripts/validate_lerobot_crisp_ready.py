@@ -33,6 +33,9 @@ DEFAULT_EXPECTED_CAMERAS = ("wrist",)
 DEFAULT_EXPECTED_STATE_DIM = 8
 DEFAULT_EXPECTED_ACTION_DIM = 8
 DEFAULT_EXPECTED_FPS = 10.0
+GRIPPER_LOW_VARIATION_EPS = 0.02
+GRIPPER_RANGE_GAP_FAIL_THRESHOLD = 0.25
+GRIPPER_MEAN_GAP_FAIL_THRESHOLD = 0.25
 
 
 @dataclass
@@ -207,6 +210,81 @@ def summarize_ranges(ranges: list[list[float]]) -> list[list[float]]:
     return [[round(low, 6), round(high, 6)] for low, high in ranges]
 
 
+def range_span(values: Sequence[float]) -> float:
+    return max(values) - min(values) if values else 0.0
+
+
+def range_gap(xs: Sequence[float], ys: Sequence[float]) -> float:
+    if not xs or not ys:
+        return 0.0
+    low_x, high_x = min(xs), max(xs)
+    low_y, high_y = min(ys), max(ys)
+    return max(0.0, max(low_x, low_y) - min(high_x, high_y))
+
+
+def mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values)
+
+
+def evaluate_gripper_consistency(
+    state_gripper: Sequence[float],
+    action_gripper: Sequence[float],
+    report: CheckReport,
+) -> None:
+    if len(state_gripper) != len(action_gripper) or not state_gripper:
+        return
+
+    state_span = range_span(state_gripper)
+    action_span = range_span(action_gripper)
+    state_mean = mean(state_gripper)
+    action_mean = mean(action_gripper)
+    gap = range_gap(state_gripper, action_gripper)
+    mean_gap = abs(state_mean - action_mean)
+
+    report.details["state_gripper_span"] = state_span
+    report.details["action_gripper_span"] = action_span
+    report.details["state_gripper_mean"] = state_mean
+    report.details["action_gripper_mean"] = action_mean
+    report.details["state_action_gripper_range_gap"] = gap
+    report.details["state_action_gripper_mean_gap"] = mean_gap
+
+    if gap > GRIPPER_RANGE_GAP_FAIL_THRESHOLD:
+        report.fail(
+            "Gripper state/action numeric ranges do not overlap. This suggests "
+            "the observation gripper and action gripper use different scaling, "
+            "offsets, or open/close conventions."
+        )
+    elif mean_gap > GRIPPER_MEAN_GAP_FAIL_THRESHOLD:
+        report.fail(
+            "Gripper state/action means are far apart despite overlapping ranges. "
+            "Check whether state and action gripper values are in the same units "
+            "and convention."
+        )
+
+    if (
+        state_span < GRIPPER_LOW_VARIATION_EPS
+        or action_span < GRIPPER_LOW_VARIATION_EPS
+    ):
+        report.warn(
+            "Gripper variation is too small for correlation to be meaningful. "
+            "Use the reported gripper ranges/gaps to judge whether state and "
+            "action are on the same scale."
+        )
+        return
+
+    corr = pearson(state_gripper, action_gripper)
+    report.details["state_action_gripper_correlation"] = corr
+    if corr is not None and corr < -0.5:
+        report.fail(
+            "Gripper state/action correlation is strongly negative. This is a "
+            "typical sign that one side uses open=1 while the other uses open=0."
+        )
+    elif corr is not None:
+        report.pass_(f"Gripper state/action correlation looks plausible: {corr:.3f}")
+    else:
+        report.warn("Could not infer gripper correlation, likely too little variation")
+
+
 def inspect_parquet_rows(
     rows: ParquetRows,
     parquet_path: Path,
@@ -342,18 +420,7 @@ def inspect_parquets(
         report.details["action_gripper_min"] = min(action_gripper)
         report.details["action_gripper_max"] = max(action_gripper)
 
-    if len(state_gripper) == len(action_gripper) and state_gripper:
-        corr = pearson(state_gripper, action_gripper)
-        report.details["state_action_gripper_correlation"] = corr
-        if corr is not None and corr < -0.5:
-            report.fail(
-                "Gripper state/action correlation is strongly negative. This is a "
-                "typical sign that one side uses open=1 while the other uses open=0."
-            )
-        elif corr is not None:
-            report.pass_(f"Gripper state/action correlation looks plausible: {corr:.3f}")
-        else:
-            report.warn("Could not infer gripper correlation, likely too little variation")
+    evaluate_gripper_consistency(state_gripper, action_gripper, report)
 
     if len(all_timestamps) >= 3:
         all_timestamps = sorted(all_timestamps)
