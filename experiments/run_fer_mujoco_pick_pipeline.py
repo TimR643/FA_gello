@@ -1,4 +1,4 @@
-"""Run the real recording pipeline against a local MuJoCo pick task."""
+"""Run the real recording pipeline against the FER ROS 2 MuJoCo simulator."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Literal, Optional
 
 import tyro
 
+from gello.cameras.ros2_image_camera import Ros2ImageCamera, Ros2ImageCameraConfig
 from gello.env import RobotEnv
-from gello.robots.mujoco_panda_pick import (
-    HardcodedPandaPickAgent,
-    MujocoPandaPickRobot,
-    MujocoPickSceneConfig,
-    MujocoWristCamera,
+from gello.robots.fer_mujoco_ros2 import (
+    FerMujocoRos2Config,
+    FerMujocoRos2Robot,
+    HardcodedFerPickAgent,
 )
 from gello.utils.control_utils import LeRobotDatasetWriter
 from gello.zmq_core.recording_node import ZMQRecordingPublisher
@@ -25,38 +25,46 @@ class Args:
     hz: int = 30
     steps_per_waypoint: int = 80
     save_mode: Literal["none", "lerobot", "recording_stream"] = "lerobot"
-    lerobot_root: str = "~/lerobot_data/mujoco_panda_pick"
-    lerobot_repo_id: str = "local/mujoco_panda_pick_wrist"
+    use_wrist_camera: bool = True
+    wrist_rgb_topic: str = "/wrist_camera/image_raw"
+    wrist_depth_topic: Optional[str] = "/wrist_camera/depth/image_raw"
+    joint_state_topic: str = "/joint_states"
+    arm_command_topic: str = "/joint_effort_traj_controller/joint_trajectory"
+    gripper_action_name: str = "/gripper_effort_controller/gripper_cmd"
+    lerobot_root: str = "~/lerobot_data/fer_mujoco_pick"
+    lerobot_repo_id: str = "local/fer_mujoco_pick_wrist"
     lerobot_fps: int = 30
-    lerobot_task: str = "Pick the red cube from the table in MuJoCo."
-    lerobot_robot_type: str = "panda_gello"
+    lerobot_task: str = "Pick the cube from the table in the FER MuJoCo simulator."
+    lerobot_robot_type: str = "fer_mujoco"
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     record_stream_host: str = "127.0.0.1"
     record_stream_port: int = 7000
     record_stream_hwm: int = 2
-    image_height: int = 480
-    image_width: int = 640
-    xml_dump_path: Optional[str] = "mujoco_panda_pick_scene.xml"
 
 
 def main(args: Args) -> None:
-    robot = MujocoPandaPickRobot(
-        MujocoPickSceneConfig(
-            image_height=args.image_height,
-            image_width=args.image_width,
-            xml_dump_path=args.xml_dump_path,
+    robot = FerMujocoRos2Robot(
+        FerMujocoRos2Config(
+            joint_state_topic=args.joint_state_topic,
+            arm_command_topic=args.arm_command_topic,
+            gripper_action_name=args.gripper_action_name,
         )
     )
-    env = RobotEnv(
-        robot,
-        control_rate_hz=args.hz,
-        camera_dict={"wrist": MujocoWristCamera(robot)},
-    )
-    agent = HardcodedPandaPickAgent(steps_per_waypoint=args.steps_per_waypoint)
+    camera_dict = {}
+    if args.use_wrist_camera:
+        camera_dict["wrist"] = Ros2ImageCamera(
+            Ros2ImageCameraConfig(
+                rgb_topic=args.wrist_rgb_topic,
+                depth_topic=args.wrist_depth_topic,
+            )
+        )
+    env = RobotEnv(robot, control_rate_hz=args.hz, camera_dict=camera_dict)
+    agent = HardcodedFerPickAgent(steps_per_waypoint=args.steps_per_waypoint)
 
     writer = None
     publisher = None
+    camera_keys = ("wrist",) if args.use_wrist_camera else tuple()
     if args.save_mode == "lerobot":
         writer = LeRobotDatasetWriter(
             root=args.lerobot_root,
@@ -64,7 +72,7 @@ def main(args: Args) -> None:
             fps=args.lerobot_fps,
             task=args.lerobot_task,
             robot_type=args.lerobot_robot_type,
-            camera_keys=("wrist",),
+            camera_keys=camera_keys,
             streaming_encoding=args.lerobot_streaming_encoding,
             batch_encoding_size=args.lerobot_batch_encoding_size,
         )
@@ -78,9 +86,9 @@ def main(args: Args) -> None:
             {"type": "start", "timestamp": datetime.datetime.now().isoformat()}
         )
 
-    print("MuJoCo pick pipeline simulation started")
+    print("FER MuJoCo pick pipeline started")
     print(
-        f"save_mode={args.save_mode}, hz={args.hz}, camera=wrist {args.image_width}x{args.image_height}"
+        f"save_mode={args.save_mode}, hz={args.hz}, wrist_camera={args.use_wrist_camera}"
     )
 
     frame_count = 0
@@ -103,11 +111,8 @@ def main(args: Args) -> None:
             obs = env.step(action)
             frame_count += 1
             if frame_count % args.hz == 0:
-                cube = obs.get("cube_position")
-                grasped = bool(obs.get("cube_grasped", [False])[0])
-                print(f"t={frame_count / args.hz:.1f}s cube={cube} grasped={grasped}")
-            sleep_time = max(0.0, (1.0 / args.hz) - (time.time() - started))
-            time.sleep(sleep_time)
+                print(f"t={frame_count / args.hz:.1f}s joints={obs['joint_positions']}")
+            time.sleep(max(0.0, (1.0 / args.hz) - (time.time() - started)))
     finally:
         if writer is not None:
             writer.save_episode()
@@ -119,6 +124,7 @@ def main(args: Args) -> None:
             )
             publisher.close()
             print(f"Streamed one recording episode with {frame_count} frames")
+        robot.close()
 
 
 if __name__ == "__main__":
