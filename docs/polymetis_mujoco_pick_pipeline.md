@@ -17,9 +17,10 @@ The launcher opens a tmux session and starts, in order. If an old `polymetis_muj
 
 1. a visible MuJoCo-backed Polymetis robot server,
 2. this repo's regular ZMQ robot node with `--robot panda --robot-ip 127.0.0.1`,
-3. optional wrist-camera ZMQ process,
-4. optional LeRobot stream recorder,
-5. the deterministic pick-policy client.
+3. a GELLO Panda ZMQ node that defaults to arm-only simulation mode (`PANDA_USE_GRIPPER=0`) because Polymetis `mujoco_sim` usually does not start a separate gripper server,
+4. optional wrist-camera ZMQ process,
+5. optional LeRobot stream recorder,
+6. the deterministic pick-policy client.
 
 ## Visible MuJoCo Franka viewer
 
@@ -42,6 +43,13 @@ If you are running over SSH, make sure X forwarding or your local display is ava
 ```bash
 MUJOCO_GUI=false SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
 ```
+
+
+## Built-in Polymetis simulator versus the FER scene
+
+The command `launch_robot.py robot_client=mujoco_sim ...` starts the simulator shipped by your local Polymetis installation. On your machine its log prints `pybullet build time`, so this built-in simulator is useful for validating the **Polymetis control path**, but it is not necessarily the same table/cube/wrist-camera scene from `GKnerd/fer_ros2_simulation`. That FER repository is ROS2/MuJoCo-oriented; to use its exact assets while still commanding through Polymetis, there must be a Polymetis-compatible simulator server for that scene.
+
+This launcher is now prepared for that: replace only `POLYMETIS_SIM_CMD` with the command that starts your FER-compatible Polymetis server, and keep the same `POLYMETIS_GRPC_PORT` so the GELLO ZMQ node connects to it. Until that server exists, the current `mujoco_sim` path is an arm-control smoke test, not a faithful FER scene reproduction.
 
 ## Reset after a failed run
 
@@ -110,6 +118,21 @@ SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
 
 This still starts MuJoCo and controls the simulated Panda through Polymetis, but it does not try to write a LeRobot dataset.
 
+
+## Polymetis gripper server errors in simulation
+
+The built-in Polymetis simulator often exposes only the arm server on `50051`; no gripper server is available on the separate default gripper endpoint. Therefore the launcher starts the Panda ZMQ node with:
+
+```bash
+PANDA_USE_GRIPPER=0
+PANDA_INITIALIZE_ROBOT=0
+PANDA_MANUAL_GRIPPER_OVERRIDE=0
+```
+
+The pipeline still keeps the same 8-value action/observation schema by storing a scalar simulated gripper value locally. If you later run against hardware or a simulator that really provides a Polymetis gripper server, set `PANDA_USE_GRIPPER=1`.
+
+The launcher also waits until the ZMQ robot port is reachable before starting the pick client, so the client should no longer immediately fail with `ZMQ timeout - robot may be disconnected` just because the Panda node is still initializing.
+
 ## Recording to LeRobot
 
 After `lerobot` is importable in the same conda environment used for Polymetis, run:
@@ -142,6 +165,10 @@ MUJOCO_GL=glfw
 POLYMETIS_SIM_METADATA_OVERRIDES="'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'"
 POLYMETIS_GRPC_PORT=50051
 AUTO_SELECT_POLYMETIS_PORT=1
+PANDA_USE_GRIPPER=0
+PANDA_INITIALIZE_ROBOT=0
+PANDA_MANUAL_GRIPPER_OVERRIDE=0
+ZMQ_READY_TIMEOUT=20
 RESTART_EXISTING_SESSION=1
 KEEP_TMUX_ON_FAILURE=1
 RESET_STALE_POLYMETIS=1

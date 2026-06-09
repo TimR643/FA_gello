@@ -14,6 +14,10 @@ SAVE_MODE="${SAVE_MODE:-lerobot}"
 START_POLYMETIS_SIM="${START_POLYMETIS_SIM:-1}"
 START_ROBOT_ZMQ="${START_ROBOT_ZMQ:-1}"
 START_WRIST_CAMERA="${START_WRIST_CAMERA:-0}"
+PANDA_USE_GRIPPER="${PANDA_USE_GRIPPER:-0}"
+PANDA_INITIALIZE_ROBOT="${PANDA_INITIALIZE_ROBOT:-0}"
+PANDA_MANUAL_GRIPPER_OVERRIDE="${PANDA_MANUAL_GRIPPER_OVERRIDE:-0}"
+ZMQ_READY_TIMEOUT="${ZMQ_READY_TIMEOUT:-20}"
 RESET_STALE_POLYMETIS="${RESET_STALE_POLYMETIS:-1}"
 POLYMETIS_GRPC_PORT="${POLYMETIS_GRPC_PORT:-50051}"
 POLYMETIS_READY_TIMEOUT="${POLYMETIS_READY_TIMEOUT:-60}"
@@ -232,6 +236,34 @@ else:
 PY
 )
 
+WAIT_FOR_TCP_PORT_CMD=$(cat <<'PYTCPWAIT'
+import socket
+import sys
+import time
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+timeout = float(sys.argv[3])
+deadline = time.time() + timeout
+while time.time() < deadline:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect((host, port))
+    except OSError:
+        time.sleep(0.25)
+    else:
+        sock.close()
+        print(f"TCP server is ready at {host}:{port}")
+        break
+    finally:
+        sock.close()
+else:
+    print(f"Timed out waiting for TCP server at {host}:{port}", file=sys.stderr)
+    sys.exit(1)
+PYTCPWAIT
+)
+
 tmux new-session -d -s "$SESSION" -n "pipeline"
 SESSION_STARTED=1
 
@@ -250,12 +282,25 @@ if [[ "$START_POLYMETIS_SIM" == "1" || "$START_ROBOT_ZMQ" == "1" ]]; then
   "$PYTHON_BIN" -c "$WAIT_FOR_POLYMETIS_CMD" "$HOST" "$POLYMETIS_GRPC_PORT" "$POLYMETIS_READY_TIMEOUT"
 fi
 
+PANDA_GRIPPER_ARG="--no-panda-use-gripper"
+if [[ "$PANDA_USE_GRIPPER" == "1" ]]; then
+  PANDA_GRIPPER_ARG="--panda-use-gripper"
+fi
+PANDA_INIT_ARG="--no-panda-initialize-robot"
+if [[ "$PANDA_INITIALIZE_ROBOT" == "1" ]]; then
+  PANDA_INIT_ARG="--panda-initialize-robot"
+fi
+PANDA_MANUAL_ARG="--no-panda-manual-gripper-override"
+if [[ "$PANDA_MANUAL_GRIPPER_OVERRIDE" == "1" ]]; then
+  PANDA_MANUAL_ARG="--panda-manual-gripper-override"
+fi
+
 if [[ "$START_ROBOT_ZMQ" == "1" ]]; then
   tmux new-window -t "$SESSION:2" -n "robot_zmq"
   tmux send-keys -t "$SESSION:2" "$TMUX_ACTIVATE_CMD" C-m
   tmux send-keys -t "$SESSION:2" "cd '$PROJECT_DIR'" C-m
-  tmux send-keys -t "$SESSION:2" "python -u experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot_port $ROBOT_PORT --robot-ip 127.0.0.1 --polymetis-port $POLYMETIS_GRPC_PORT" C-m
-  sleep 3
+  tmux send-keys -t "$SESSION:2" "python -u experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot_port $ROBOT_PORT --robot-ip 127.0.0.1 --polymetis-port $POLYMETIS_GRPC_PORT $PANDA_GRIPPER_ARG $PANDA_INIT_ARG $PANDA_MANUAL_ARG" C-m
+  "$PYTHON_BIN" -c "$WAIT_FOR_TCP_PORT_CMD" "$HOST" "$ROBOT_PORT" "$ZMQ_READY_TIMEOUT"
 fi
 
 if [[ "$START_WRIST_CAMERA" == "1" ]]; then

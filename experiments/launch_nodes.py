@@ -14,6 +14,9 @@ class Args:
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.10"
     polymetis_port: int = 50051
+    panda_use_gripper: bool = True
+    panda_initialize_robot: bool = True
+    panda_manual_gripper_override: bool = True
 
 
 def launch_robot_server(args: Args):
@@ -78,7 +81,13 @@ def launch_robot_server(args: Args):
         elif args.robot == "panda":
             from gello.robots.panda import PandaRobot
 
-            robot = PandaRobot(robot_ip=args.robot_ip, polymetis_port=args.polymetis_port)
+            robot = PandaRobot(
+                robot_ip=args.robot_ip,
+                polymetis_port=args.polymetis_port,
+                use_gripper=args.panda_use_gripper,
+                initialize_robot=args.panda_initialize_robot,
+                manual_gripper_override=args.panda_manual_gripper_override,
+            )
         elif args.robot == "bimanual_ur":
             from gello.robots.ur import URRobot
 
