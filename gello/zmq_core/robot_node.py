@@ -1,5 +1,5 @@
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import zmq
@@ -69,9 +69,17 @@ class ZMQServerRobot:
 class ZMQClientRobot(Robot):
     """A class representing a ZMQ client for a leader robot."""
 
-    def __init__(self, port: int = DEFAULT_ROBOT_PORT, host: str = "127.0.0.1"):
+    def __init__(
+        self,
+        port: int = DEFAULT_ROBOT_PORT,
+        host: str = "127.0.0.1",
+        timeout_ms: Optional[int] = None,
+    ):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REQ)
+        if timeout_ms is not None:
+            self._socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+            self._socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
         self._socket.connect(f"tcp://{host}:{port}")
 
     def num_dofs(self) -> int:

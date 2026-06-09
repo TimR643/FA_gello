@@ -37,10 +37,13 @@ class Args:
     record_stream_host: str = "127.0.0.1"
     record_stream_port: int = 7000
     record_stream_hwm: int = 2
+    robot_zmq_timeout_ms: int = 5000
 
 
 def main(args: Args) -> None:
-    robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+    robot = ZMQClientRobot(
+        port=args.robot_port, host=args.robot_host, timeout_ms=args.robot_zmq_timeout_ms
+    )
     camera_dict = {}
     if args.use_wrist_camera:
         camera_dict["wrist"] = ZMQClientCamera(
@@ -52,16 +55,27 @@ def main(args: Args) -> None:
     writer = None
     publisher = None
     if args.save_mode == "lerobot":
-        writer = LeRobotDatasetWriter(
-            root=args.lerobot_root,
-            repo_id=args.lerobot_repo_id,
-            fps=args.lerobot_fps,
-            task=args.lerobot_task,
-            robot_type=args.lerobot_robot_type,
-            camera_keys=("wrist",) if args.use_wrist_camera else tuple(),
-            streaming_encoding=args.lerobot_streaming_encoding,
-            batch_encoding_size=args.lerobot_batch_encoding_size,
-        )
+        try:
+            writer = LeRobotDatasetWriter(
+                root=args.lerobot_root,
+                repo_id=args.lerobot_repo_id,
+                fps=args.lerobot_fps,
+                task=args.lerobot_task,
+                robot_type=args.lerobot_robot_type,
+                camera_keys=("wrist",) if args.use_wrist_camera else tuple(),
+                streaming_encoding=args.lerobot_streaming_encoding,
+                batch_encoding_size=args.lerobot_batch_encoding_size,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name != "lerobot":
+                raise
+            raise SystemExit(
+                "LeRobot is not installed in the active Python environment. "
+                "Install LeRobot into the polymetis environment before recording, "
+                "or run a movement-only MuJoCo smoke test with "
+                "--save-mode none. Important: this runner does not start MuJoCo; "
+                "start the full stack with ./start_polymetis_mujoco_pick_pipeline.sh."
+            ) from exc
     elif args.save_mode == "recording_stream":
         publisher = ZMQRecordingPublisher(
             host=args.record_stream_host,
@@ -72,14 +86,29 @@ def main(args: Args) -> None:
             {"type": "start", "timestamp": datetime.datetime.now().isoformat()}
         )
 
-    print("Polymetis MuJoCo pick pipeline started")
+    print("Polymetis MuJoCo pick pipeline client started")
+    print(
+        "This script only runs the fixed pick policy against an already running "
+        "ZMQ robot node. To start MuJoCo + Polymetis + ZMQ + this client, use "
+        "./start_polymetis_mujoco_pick_pipeline.sh."
+    )
     print(
         f"save_mode={args.save_mode}, hz={args.hz}, "
         f"use_wrist_camera={args.use_wrist_camera}"
     )
 
     frame_count = 0
-    obs = env.get_obs()
+    try:
+        obs = env.get_obs()
+    except Exception as exc:
+        raise SystemExit(
+            f"Could not read the first robot observation from "
+            f"{args.robot_host}:{args.robot_port}: {exc}\n"
+            "Make sure the full stack is running. Recommended command:\n"
+            "  ./start_polymetis_mujoco_pick_pipeline.sh\n"
+            "For a no-recording movement test when LeRobot is not installed:\n"
+            "  SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh"
+        ) from exc
     try:
         while not agent.done:
             started = time.time()
