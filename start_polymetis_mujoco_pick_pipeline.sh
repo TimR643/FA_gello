@@ -19,6 +19,9 @@ POLYMETIS_GRPC_PORT="${POLYMETIS_GRPC_PORT:-50051}"
 POLYMETIS_READY_TIMEOUT="${POLYMETIS_READY_TIMEOUT:-60}"
 AUTO_SELECT_POLYMETIS_PORT="${AUTO_SELECT_POLYMETIS_PORT:-1}"
 LOG_DIR="${LOG_DIR:-/tmp/${SESSION}_logs}"
+RESTART_EXISTING_SESSION="${RESTART_EXISTING_SESSION:-1}"
+KEEP_TMUX_ON_FAILURE="${KEEP_TMUX_ON_FAILURE:-1}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 MUJOCO_GL="${MUJOCO_GL:-glfw}"
 MUJOCO_GUI="${MUJOCO_GUI:-true}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-~/lerobot_data/polymetis_mujoco_pick}"
@@ -43,8 +46,13 @@ cleanup_on_error() {
       tmux capture-pane -p -S -2000 -t "$pane" > "$LOG_DIR/$safe_pane.log" 2>/dev/null || true
     done
     echo "Launcher failed; captured tmux pane logs in $LOG_DIR" >&2
-    echo "Stopping tmux session $SESSION" >&2
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if [[ "$KEEP_TMUX_ON_FAILURE" == "1" ]]; then
+      echo "Keeping tmux session $SESSION alive for inspection. Attach with: tmux attach -t $SESSION" >&2
+      echo "Run ./stop_polymetis_mujoco_pick_pipeline.sh before the next clean start, or keep RESTART_EXISTING_SESSION=1." >&2
+    else
+      echo "Stopping tmux session $SESSION" >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+    fi
   fi
 }
 trap cleanup_on_error EXIT
@@ -66,7 +74,7 @@ activate_conda_env() {
 TMUX_ACTIVATE_CMD="set +u; source '$CONDA_SETUP'; conda activate '$CONDA_ENV'; set -u"
 
 port_is_open() {
-  python - "$HOST" "$1" <<'PYPORTOPEN'
+  "$PYTHON_BIN" - "$HOST" "$1" <<'PYPORTOPEN'
 import socket
 import sys
 
@@ -86,7 +94,7 @@ PYPORTOPEN
 }
 
 find_free_polymetis_port() {
-  python - "$HOST" "$POLYMETIS_GRPC_PORT" <<'PYFREEPORT'
+  "$PYTHON_BIN" - "$HOST" "$POLYMETIS_GRPC_PORT" <<'PYFREEPORT'
 import socket
 import sys
 
@@ -130,10 +138,24 @@ fi
 
 echo "MuJoCo visualization: gui=$MUJOCO_GUI, MUJOCO_GL=$MUJOCO_GL"
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo "tmux session '$SESSION' already exists. Attach with: tmux attach -t $SESSION" >&2
-  echo "Or stop it first with: tmux kill-session -t $SESSION" >&2
+activate_conda_env
+PYTHON_BIN="$(command -v python || command -v python3 || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "No python executable found after activating conda env '$CONDA_ENV'." >&2
   exit 1
+fi
+
+echo "Using Python: $PYTHON_BIN"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  if [[ "$RESTART_EXISTING_SESSION" == "1" ]]; then
+    echo "tmux session '$SESSION' already exists; restarting it for a clean launch."
+    tmux kill-session -t "$SESSION"
+  else
+    echo "tmux session '$SESSION' already exists. Attach with: tmux attach -t $SESSION" >&2
+    echo "Or stop it first with: tmux kill-session -t $SESSION" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$START_POLYMETIS_SIM" == "1" && "$RESET_STALE_POLYMETIS" == "1" ]]; then
@@ -162,7 +184,7 @@ else
 fi
 
 if [[ "$SAVE_MODE" == "lerobot" || "$SAVE_MODE" == "recording_stream" ]]; then
-  if ! activate_conda_env >/dev/null 2>&1 || ! python - <<'PY' >/dev/null 2>&1
+  if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 from lerobot.datasets import LeRobotDataset  # noqa: F401
 PY
   then
@@ -198,9 +220,8 @@ else:
     print(
         f"Timed out waiting for a valid Polymetis robot server at {host}:{port}.\n"
         f"Last error: {last_exc}\n"
-        "If you see 'Robot context not valid' or 'Port unavailable', kill stale servers with:\n"
-        "  pkill -9 run_server\n"
-        "Then restart this launcher.",
+        "The launcher keeps/captures tmux logs on failure. Inspect the polymetis_sim log "
+        "to see the underlying MuJoCo/Polymetis error.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -221,8 +242,7 @@ fi
 
 # Wait in the foreground as well so the ZMQ node is not started against a stale or half-started robot context.
 if [[ "$START_POLYMETIS_SIM" == "1" || "$START_ROBOT_ZMQ" == "1" ]]; then
-  activate_conda_env
-  python -c "$WAIT_FOR_POLYMETIS_CMD" "$HOST" "$POLYMETIS_GRPC_PORT" "$POLYMETIS_READY_TIMEOUT"
+  "$PYTHON_BIN" -c "$WAIT_FOR_POLYMETIS_CMD" "$HOST" "$POLYMETIS_GRPC_PORT" "$POLYMETIS_READY_TIMEOUT"
 fi
 
 if [[ "$START_ROBOT_ZMQ" == "1" ]]; then

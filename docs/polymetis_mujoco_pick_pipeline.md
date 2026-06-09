@@ -13,7 +13,7 @@ cd /home/tim/gello_software
 ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 
-The launcher opens a tmux session and starts, in order:
+The launcher opens a tmux session and starts, in order. If an old `polymetis_mujoco_pick_pipeline` tmux session already exists, the launcher now restarts it by default (`RESTART_EXISTING_SESSION=1`) so repeated smoke-test attempts start cleanly:
 
 1. a visible MuJoCo-backed Polymetis robot server,
 2. this repo's regular ZMQ robot node with `--robot panda --robot-ip 127.0.0.1`,
@@ -64,7 +64,7 @@ When startup fails, the launcher captures the tmux panes before tearing down the
 /tmp/polymetis_mujoco_pick_pipeline_logs
 ```
 
-The most important file is usually the `polymetis_sim` pane log because it contains the actual `launch_robot.py` / MuJoCo error. The readiness probe only tells us that `RobotInterface` could not read valid metadata yet; the tmux log usually tells us whether the MuJoCo viewer failed, the Polymetis config crashed, or a stale server was still bound.
+The most important file is usually the `polymetis_sim` pane log because it contains the actual `launch_robot.py` / MuJoCo error. The readiness probe only tells us that `RobotInterface` could not read valid metadata yet; the tmux log usually tells us whether the MuJoCo viewer failed, the Polymetis config crashed, or a stale server was still bound. By default `KEEP_TMUX_ON_FAILURE=1`, so the tmux session is also left alive for inspection; attach with `tmux attach -t polymetis_mujoco_pick_pipeline`.
 
 If you want to force a specific clean Polymetis port manually, run for example:
 
@@ -74,7 +74,7 @@ POLYMETIS_GRPC_PORT=50100 SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.
 
 ## Conda MKL `MKL_INTERFACE_LAYER: unbound variable`
 
-The launcher uses `set -u` for safer shell scripting, but some conda activation hooks read unset variables. The script now temporarily disables `nounset` only around `conda activate`, so this error should no longer stop startup:
+The launcher uses `set -u` for safer shell scripting, but some conda activation hooks read unset variables. The script now temporarily disables `nounset` only around `conda activate`, and it activates conda before any Python-based port checks, so this error and `python: command not found` should no longer stop startup:
 
 ```text
 libblas_mkl_activate.sh: line 1: MKL_INTERFACE_LAYER: unbound variable
@@ -124,6 +124,8 @@ MUJOCO_GUI=true
 MUJOCO_GL=glfw
 POLYMETIS_GRPC_PORT=50051
 AUTO_SELECT_POLYMETIS_PORT=1
+RESTART_EXISTING_SESSION=1
+KEEP_TMUX_ON_FAILURE=1
 RESET_STALE_POLYMETIS=1
 SAVE_MODE=lerobot
 ```
