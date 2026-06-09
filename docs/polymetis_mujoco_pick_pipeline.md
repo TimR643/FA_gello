@@ -28,7 +28,7 @@ The launcher defaults to a visible MuJoCo viewer for the simulated Franka:
 ```bash
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true"
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT"
 ```
 
 So the normal command should open the MuJoCo window in the `polymetis_sim` tmux pane while the pick client runs in the `pipeline` pane:
@@ -52,8 +52,25 @@ cd /home/tim/gello_software
 ./stop_polymetis_mujoco_pick_pipeline.sh
 ```
 
-The start launcher also performs this cleanup automatically by default when `START_POLYMETIS_SIM=1`.
+The start launcher also performs this cleanup automatically by default when `START_POLYMETIS_SIM=1`. If port `50051` is still occupied after cleanup, `AUTO_SELECT_POLYMETIS_PORT=1` makes the launcher choose a free nearby port and passes the same port to both `launch_robot.py` and the GELLO Panda ZMQ node.
 
+
+
+## If readiness still times out
+
+When startup fails, the launcher captures the tmux panes before tearing down the session. Look in the printed `LOG_DIR`, which defaults to:
+
+```bash
+/tmp/polymetis_mujoco_pick_pipeline_logs
+```
+
+The most important file is usually the `polymetis_sim` pane log because it contains the actual `launch_robot.py` / MuJoCo error. The readiness probe only tells us that `RobotInterface` could not read valid metadata yet; the tmux log usually tells us whether the MuJoCo viewer failed, the Polymetis config crashed, or a stale server was still bound.
+
+If you want to force a specific clean Polymetis port manually, run for example:
+
+```bash
+POLYMETIS_GRPC_PORT=50100 SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+```
 
 ## Conda MKL `MKL_INTERFACE_LAYER: unbound variable`
 
@@ -102,10 +119,11 @@ The deterministic agent only replaces GELLO teleoperation; it still emits the sa
 ```bash
 MUJOCO_DIR=/home/tim/mujoco-3.9.0-linux-x86_64
 CONDA_ENV=polymetis
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true"
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT"
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
 POLYMETIS_GRPC_PORT=50051
+AUTO_SELECT_POLYMETIS_PORT=1
 RESET_STALE_POLYMETIS=1
 SAVE_MODE=lerobot
 ```
@@ -127,7 +145,7 @@ START_POLYMETIS_SIM=0 RESET_STALE_POLYMETIS=0 ./start_polymetis_mujoco_pick_pipe
 If your Polymetis installation uses a different Hydra config name for the MuJoCo simulation, override only the simulator command:
 
 ```bash
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=franka_sim use_real_time=false gui=true" \
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=franka_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT" \
 ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 
@@ -163,7 +181,8 @@ python -u experiments/launch_nodes.py \
   --robot panda \
   --hostname 127.0.0.1 \
   --robot_port 6001 \
-  --robot-ip 127.0.0.1
+  --robot-ip 127.0.0.1 \
+  --polymetis-port 50051
 ```
 
 Terminal 3, movement-only:

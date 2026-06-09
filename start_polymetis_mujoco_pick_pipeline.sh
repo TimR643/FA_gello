@@ -17,11 +17,17 @@ START_WRIST_CAMERA="${START_WRIST_CAMERA:-0}"
 RESET_STALE_POLYMETIS="${RESET_STALE_POLYMETIS:-1}"
 POLYMETIS_GRPC_PORT="${POLYMETIS_GRPC_PORT:-50051}"
 POLYMETIS_READY_TIMEOUT="${POLYMETIS_READY_TIMEOUT:-60}"
+AUTO_SELECT_POLYMETIS_PORT="${AUTO_SELECT_POLYMETIS_PORT:-1}"
+LOG_DIR="${LOG_DIR:-/tmp/${SESSION}_logs}"
 MUJOCO_GL="${MUJOCO_GL:-glfw}"
 MUJOCO_GUI="${MUJOCO_GUI:-true}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-~/lerobot_data/polymetis_mujoco_pick}"
 LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/polymetis_mujoco_pick_wrist}"
-POLYMETIS_SIM_CMD="${POLYMETIS_SIM_CMD:-launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI}"
+POLYMETIS_SIM_CMD_USER_SET=0
+if [[ -n "${POLYMETIS_SIM_CMD+x}" ]]; then
+  POLYMETIS_SIM_CMD_USER_SET=1
+fi
+POLYMETIS_SIM_CMD="${POLYMETIS_SIM_CMD:-}"
 WRIST_CAMERA_CMD="${WRIST_CAMERA_CMD:-}"
 
 export MUJOCO_PATH="$MUJOCO_DIR"
@@ -31,7 +37,13 @@ SESSION_STARTED=0
 cleanup_on_error() {
   local status=$?
   if [[ $status -ne 0 && "$SESSION_STARTED" == "1" ]]; then
-    echo "Launcher failed; stopping tmux session $SESSION" >&2
+    mkdir -p "$LOG_DIR"
+    for pane in $(tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null | grep "^$SESSION:" || true); do
+      local safe_pane="${pane//[:.]/_}"
+      tmux capture-pane -p -S -2000 -t "$pane" > "$LOG_DIR/$safe_pane.log" 2>/dev/null || true
+    done
+    echo "Launcher failed; captured tmux pane logs in $LOG_DIR" >&2
+    echo "Stopping tmux session $SESSION" >&2
     tmux kill-session -t "$SESSION" 2>/dev/null || true
   fi
 }
@@ -52,6 +64,48 @@ activate_conda_env() {
 }
 
 TMUX_ACTIVATE_CMD="set +u; source '$CONDA_SETUP'; conda activate '$CONDA_ENV'; set -u"
+
+port_is_open() {
+  python - "$HOST" "$1" <<'PYPORTOPEN'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(0.25)
+try:
+    sock.connect((host, port))
+except OSError:
+    sys.exit(1)
+else:
+    sys.exit(0)
+finally:
+    sock.close()
+PYPORTOPEN
+}
+
+find_free_polymetis_port() {
+  python - "$HOST" "$POLYMETIS_GRPC_PORT" <<'PYFREEPORT'
+import socket
+import sys
+
+host = sys.argv[1]
+# Avoid 50052 because Polymetis commonly uses it for the gripper server.
+start = max(int(sys.argv[2]) + 1, 50100)
+for port in range(start, start + 100):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        continue
+    finally:
+        sock.close()
+    print(port)
+    sys.exit(0)
+raise SystemExit("No free Polymetis port found")
+PYFREEPORT
+}
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux is required for this launcher." >&2
@@ -87,6 +141,24 @@ if [[ "$START_POLYMETIS_SIM" == "1" && "$RESET_STALE_POLYMETIS" == "1" ]]; then
   pkill -9 -f "run_server" 2>/dev/null || true
   pkill -9 -f "launch_robot.py.*robot_client=.*sim" 2>/dev/null || true
   sleep 1
+fi
+
+if [[ "$START_POLYMETIS_SIM" == "1" ]] && port_is_open "$POLYMETIS_GRPC_PORT"; then
+  if [[ "$AUTO_SELECT_POLYMETIS_PORT" == "1" ]]; then
+    OLD_POLYMETIS_GRPC_PORT="$POLYMETIS_GRPC_PORT"
+    POLYMETIS_GRPC_PORT="$(find_free_polymetis_port)"
+    echo "Port $OLD_POLYMETIS_GRPC_PORT is still occupied after cleanup; using Polymetis port $POLYMETIS_GRPC_PORT for this run."
+  else
+    echo "Polymetis port $POLYMETIS_GRPC_PORT is still occupied after cleanup." >&2
+    echo "Run ./stop_polymetis_mujoco_pick_pipeline.sh or choose another port with POLYMETIS_GRPC_PORT=50100." >&2
+    exit 1
+  fi
+fi
+
+if [[ "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
+  POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI port=$POLYMETIS_GRPC_PORT"
+else
+  echo "Using custom POLYMETIS_SIM_CMD. Make sure it binds to port $POLYMETIS_GRPC_PORT or set POLYMETIS_GRPC_PORT to match it."
 fi
 
 if [[ "$SAVE_MODE" == "lerobot" || "$SAVE_MODE" == "recording_stream" ]]; then
@@ -157,7 +229,7 @@ if [[ "$START_ROBOT_ZMQ" == "1" ]]; then
   tmux new-window -t "$SESSION:2" -n "robot_zmq"
   tmux send-keys -t "$SESSION:2" "$TMUX_ACTIVATE_CMD" C-m
   tmux send-keys -t "$SESSION:2" "cd '$PROJECT_DIR'" C-m
-  tmux send-keys -t "$SESSION:2" "python -u experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot_port $ROBOT_PORT --robot-ip 127.0.0.1" C-m
+  tmux send-keys -t "$SESSION:2" "python -u experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot_port $ROBOT_PORT --robot-ip 127.0.0.1 --polymetis-port $POLYMETIS_GRPC_PORT" C-m
   sleep 3
 fi
 

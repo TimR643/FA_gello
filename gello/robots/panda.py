@@ -17,11 +17,12 @@ MAX_OPEN = 0.09
 class PandaRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "100.97.47.74"):
+    def __init__(self, robot_ip: str = "100.97.47.74", polymetis_port: int = 50051):
         from polymetis import GripperInterface, RobotInterface
 
         self.robot = RobotInterface(
             ip_address=robot_ip,
+            port=polymetis_port,
         )
         self.gripper = GripperInterface(
             ip_address="localhost",
@@ -31,7 +32,7 @@ class PandaRobot(Robot):
         self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
         time.sleep(1)
 
-        self.robot = polymetis.RobotInterface(ip_address=robot_ip)
+        self.robot = polymetis.RobotInterface(ip_address=robot_ip, port=polymetis_port)
         self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
 
         self.last_target_width = 0.08
