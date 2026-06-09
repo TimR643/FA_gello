@@ -2,54 +2,53 @@
 
 This simulation path deliberately controls the robot exactly like the real Panda path in this repository: the pipeline talks to a GELLO ZMQ robot node, that node instantiates `PandaRobot`, and `PandaRobot` uses `polymetis.RobotInterface` / `polymetis.GripperInterface` for every motion command. No ROS 2 controller is used for robot movement.
 
-## Important: use the launcher to start MuJoCo
+## Important: the gray built-in simulator is not the FER scene
+
+The screenshot with the gray capsule-like arm shows the simulator shipped by your local Polymetis install (`launch_robot.py robot_client=mujoco_sim`). That is **not** the FER MuJoCo scene from `GKnerd/fer_ros2_simulation`: it has no table, cube, correct Franka model, or wrist camera. It is also unstable for this pick pipeline on your machine (`Connection reset by peer`).
+
+For this reason the launcher now defaults to `SIM_BACKEND=external_fer_polymetis` and refuses to start `robot_client=mujoco_sim` unless you explicitly opt into the old toy smoke test. This prevents us from accidentally validating the wrong environment.
 
 `experiments/run_polymetis_mujoco_pick_pipeline.py` is only the final pick-policy client. Running that file directly does **not** start MuJoCo, the Polymetis robot server, or the GELLO ZMQ robot node.
 
-Start the complete stack with:
+## Correct FER-backed startup contract
+
+To run the real simulation pipeline, start a FER-compatible simulator that exposes the FER MuJoCo scene through a Polymetis robot server, then point the launcher at that command:
 
 ```bash
 cd /home/tim/gello_software
-./start_polymetis_mujoco_pick_pipeline.sh
+FER_POLYMETIS_SIM_CMD='python -u /path/to/fer_polymetis_server.py --port {POLYMETIS_GRPC_PORT} --gui' \
+SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 
-The launcher opens a tmux session and starts, in order. If an old `polymetis_mujoco_pick_pipeline` tmux session already exists, the launcher now restarts it by default (`RESTART_EXISTING_SESSION=1`) so repeated smoke-test attempts start cleanly:
+The launcher then starts, in order. If an old `polymetis_mujoco_pick_pipeline` tmux session already exists, the launcher restarts it by default (`RESTART_EXISTING_SESSION=1`) so repeated smoke-test attempts start cleanly:
 
-1. a visible MuJoCo-backed Polymetis robot server,
+1. your FER-compatible MuJoCo/Polymetis simulator command,
 2. this repo's regular ZMQ robot node with `--robot panda --robot-ip 127.0.0.1`,
-3. a GELLO Panda ZMQ node that defaults to arm-only simulation mode (`PANDA_USE_GRIPPER=0`) because Polymetis `mujoco_sim` usually does not start a separate gripper server,
+3. a GELLO Panda ZMQ node that defaults to arm-only simulation mode (`PANDA_USE_GRIPPER=0`) unless a compatible Polymetis gripper server is available,
 4. optional wrist-camera ZMQ process,
 5. optional LeRobot stream recorder,
 6. the deterministic pick-policy client.
 
-## Visible MuJoCo Franka viewer
+## Explicit toy smoke test only
 
-The launcher defaults to a visible MuJoCo viewer for the simulated Franka:
+If you only want to test that the GELLO/ZMQ/Polymetis command path can move *something*, you can explicitly start the built-in Polymetis simulator:
+
+```bash
+SIM_BACKEND=polymetis_builtin_smoke SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+```
+
+This mode is intentionally marked as a smoke test only. It is not a faithful FER scene reproduction and should not be used for validating table/cube/wrist-camera recordings.
+
+## Visible MuJoCo/FER viewer
+
+The launcher keeps GUI mode enabled by default for the simulator command:
 
 ```bash
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
 ```
 
-So the normal command should open the MuJoCo window in the `polymetis_sim` tmux pane while the pick client runs in the `pipeline` pane:
-
-```bash
-SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
-```
-
-If you are running over SSH, make sure X forwarding or your local display is available. The launcher warns when `MUJOCO_GUI=true` but `DISPLAY` is missing. If you intentionally need headless mode, run:
-
-```bash
-MUJOCO_GUI=false SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
-```
-
-
-## Built-in Polymetis simulator versus the FER scene
-
-The command `launch_robot.py robot_client=mujoco_sim ...` starts the simulator shipped by your local Polymetis installation. On your machine its log prints `pybullet build time`, so this built-in simulator is useful for validating the **Polymetis control path**, but it is not necessarily the same table/cube/wrist-camera scene from `GKnerd/fer_ros2_simulation`. That FER repository is ROS2/MuJoCo-oriented; to use its exact assets while still commanding through Polymetis, there must be a Polymetis-compatible simulator server for that scene.
-
-This launcher is now prepared for that: replace only `POLYMETIS_SIM_CMD` with the command that starts your FER-compatible Polymetis server, and keep the same `POLYMETIS_GRPC_PORT` so the GELLO ZMQ node connects to it. Until that server exists, the current `mujoco_sim` path is an arm-control smoke test, not a faithful FER scene reproduction.
+Your `FER_POLYMETIS_SIM_CMD` must use those values or its own equivalent GUI flag so the Franka/table/cube scene is visible. If you are running over SSH, make sure X forwarding or your local display is available. The launcher warns when `MUJOCO_GUI=true` but `DISPLAY` is missing.
 
 ## Reset after a failed run
 
@@ -89,13 +88,13 @@ Some Polymetis installs ship `robot_client=mujoco_sim` with metadata fields that
 str interpolation key 'default_Kq' not found
 ```
 
-The launcher now supplies those gains by default through `POLYMETIS_SIM_METADATA_OVERRIDES` and includes them in the default `launch_robot.py` command. If your local Hydra config already defines these keys and complains about duplicate `+default_*` overrides, disable the injected overrides with:
+In `SIM_BACKEND=polymetis_builtin_smoke` mode, the launcher supplies those gains through `POLYMETIS_SIM_METADATA_OVERRIDES` and includes them in the `launch_robot.py` command. If your local Hydra config already defines these keys and complains about duplicate `+default_*` overrides, disable the injected overrides with:
 
 ```bash
-POLYMETIS_SIM_METADATA_OVERRIDES= SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+SIM_BACKEND=polymetis_builtin_smoke POLYMETIS_SIM_METADATA_OVERRIDES= SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 
-When you provide a fully custom `POLYMETIS_SIM_CMD`, include the same metadata overrides yourself if your config needs them. The launcher also exports `HYDRA_FULL_ERROR=1` for the simulator window so the captured `polymetis_sim` log contains the full Hydra stack trace.
+When you provide a fully custom built-in-smoke `POLYMETIS_SIM_CMD`, include the same metadata overrides yourself if your config needs them. The launcher also exports `HYDRA_FULL_ERROR=1` for the simulator window so the captured `polymetis_sim` log contains the full Hydra stack trace.
 
 ## Conda MKL `MKL_INTERFACE_LAYER: unbound variable`
 
@@ -159,10 +158,11 @@ The deterministic agent only replaces GELLO teleoperation; it still emits the sa
 ```bash
 MUJOCO_DIR=/home/tim/mujoco-3.9.0-linux-x86_64
 CONDA_ENV=polymetis
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
+SIM_BACKEND=external_fer_polymetis
+FER_POLYMETIS_SIM_CMD=''  # may use {POLYMETIS_GRPC_PORT}, {MUJOCO_GUI}, {MUJOCO_GL} placeholders
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
-POLYMETIS_SIM_METADATA_OVERRIDES="'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'"
+POLYMETIS_SIM_METADATA_OVERRIDES=""
 POLYMETIS_GRPC_PORT=50051
 AUTO_SELECT_POLYMETIS_PORT=1
 PANDA_USE_GRIPPER=0
@@ -187,11 +187,12 @@ If you intentionally started a valid simulator yourself and do not want the laun
 START_POLYMETIS_SIM=0 RESET_STALE_POLYMETIS=0 ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 
-## If the MuJoCo Hydra config name differs
+## If you intentionally use the built-in smoke simulator
 
-If your Polymetis installation uses a different Hydra config name for the MuJoCo simulation, override only the simulator command:
+If your Polymetis installation uses a different Hydra config name for the built-in smoke simulator, explicitly opt into smoke mode and override only the simulator command:
 
 ```bash
+SIM_BACKEND=polymetis_builtin_smoke \
 POLYMETIS_SIM_CMD="launch_robot.py robot_client=franka_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES" \
 ./start_polymetis_mujoco_pick_pipeline.sh
 ```

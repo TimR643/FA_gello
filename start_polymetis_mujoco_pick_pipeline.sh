@@ -12,6 +12,8 @@ WRIST_PORT="${WRIST_PORT:-5000}"
 RECORD_STREAM_PORT="${RECORD_STREAM_PORT:-7000}"
 SAVE_MODE="${SAVE_MODE:-lerobot}"
 START_POLYMETIS_SIM="${START_POLYMETIS_SIM:-1}"
+SIM_BACKEND="${SIM_BACKEND:-external_fer_polymetis}"
+FER_POLYMETIS_SIM_CMD="${FER_POLYMETIS_SIM_CMD:-}"
 START_ROBOT_ZMQ="${START_ROBOT_ZMQ:-1}"
 START_WRIST_CAMERA="${START_WRIST_CAMERA:-0}"
 PANDA_USE_GRIPPER="${PANDA_USE_GRIPPER:-0}"
@@ -26,7 +28,7 @@ LOG_DIR="${LOG_DIR:-/tmp/${SESSION}_logs}"
 RESTART_EXISTING_SESSION="${RESTART_EXISTING_SESSION:-1}"
 KEEP_TMUX_ON_FAILURE="${KEEP_TMUX_ON_FAILURE:-1}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-POLYMETIS_SIM_METADATA_OVERRIDES="${POLYMETIS_SIM_METADATA_OVERRIDES-'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'}"
+POLYMETIS_SIM_METADATA_OVERRIDES="${POLYMETIS_SIM_METADATA_OVERRIDES:-}"
 MUJOCO_GL="${MUJOCO_GL:-glfw}"
 MUJOCO_GUI="${MUJOCO_GUI:-true}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-~/lerobot_data/polymetis_mujoco_pick}"
@@ -183,13 +185,61 @@ if [[ "$START_POLYMETIS_SIM" == "1" ]] && port_is_open "$POLYMETIS_GRPC_PORT"; t
   fi
 fi
 
-if [[ "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
-  POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
-else
-  echo "Using custom POLYMETIS_SIM_CMD. Make sure it binds to port $POLYMETIS_GRPC_PORT or set POLYMETIS_GRPC_PORT to match it. If you see default_Kq/default_Kx interpolation errors, include POLYMETIS_SIM_METADATA_OVERRIDES in your custom command."
-fi
+if [[ "$START_POLYMETIS_SIM" == "1" ]]; then
+case "$SIM_BACKEND" in
+  external_fer_polymetis)
+    if [[ -z "$FER_POLYMETIS_SIM_CMD" && "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
+      cat >&2 <<EOF2
+No FER-compatible Polymetis simulator command configured.
+The built-in Polymetis robot_client=mujoco_sim does not reproduce the FER MuJoCo scene
+(table/cube/wrist camera) and should not be used for the real pipeline simulation.
 
+Set FER_POLYMETIS_SIM_CMD to the command that starts your FER MuJoCo scene as a
+Polymetis robot server. Use {POLYMETIS_GRPC_PORT} as a placeholder for the selected port, for example:
+  FER_POLYMETIS_SIM_CMD='python -u /path/to/fer_polymetis_server.py --port {POLYMETIS_GRPC_PORT} --gui'
+
+If you only want the old toy arm smoke test, run explicitly:
+  SIM_BACKEND=polymetis_builtin_smoke SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+EOF2
+      exit 1
+    fi
+    if [[ "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
+      POLYMETIS_SIM_CMD="$FER_POLYMETIS_SIM_CMD"
+      POLYMETIS_SIM_CMD="${POLYMETIS_SIM_CMD//\{POLYMETIS_GRPC_PORT\}/$POLYMETIS_GRPC_PORT}"
+      POLYMETIS_SIM_CMD="${POLYMETIS_SIM_CMD//\{MUJOCO_GUI\}/$MUJOCO_GUI}"
+      POLYMETIS_SIM_CMD="${POLYMETIS_SIM_CMD//\{MUJOCO_GL\}/$MUJOCO_GL}"
+    fi
+    if [[ "$POLYMETIS_SIM_CMD" == *"robot_client=mujoco_sim"* ]]; then
+      cat >&2 <<EOF2
+Refusing to use robot_client=mujoco_sim for SIM_BACKEND=external_fer_polymetis.
+That built-in simulator is the wrong scene (the gray toy arm you saw), not the FER table/cube/wrist-camera environment.
+Use SIM_BACKEND=polymetis_builtin_smoke only for a control-path smoke test.
+EOF2
+      exit 1
+    fi
+    ;;
+  polymetis_builtin_smoke)
+    if [[ -z "$POLYMETIS_SIM_METADATA_OVERRIDES" ]]; then
+      POLYMETIS_SIM_METADATA_OVERRIDES="'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'"
+    fi
+    if [[ "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
+      POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
+    else
+      echo "Using custom POLYMETIS_SIM_CMD. Make sure it binds to port $POLYMETIS_GRPC_PORT or set POLYMETIS_GRPC_PORT to match it."
+    fi
+    echo "WARNING: SIM_BACKEND=polymetis_builtin_smoke is only a toy Polymetis control-path smoke test, not the FER scene."
+    ;;
+  *)
+    echo "Unknown SIM_BACKEND=$SIM_BACKEND. Use external_fer_polymetis or polymetis_builtin_smoke." >&2
+    exit 1
+    ;;
+esac
+
+echo "Simulation backend: $SIM_BACKEND"
 echo "Polymetis sim command: $POLYMETIS_SIM_CMD"
+else
+  echo "START_POLYMETIS_SIM=0; assuming an external Polymetis-compatible simulator is already running on $HOST:$POLYMETIS_GRPC_PORT."
+fi
 
 if [[ "$SAVE_MODE" == "lerobot" || "$SAVE_MODE" == "recording_stream" ]]; then
   if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1

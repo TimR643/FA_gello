@@ -124,7 +124,17 @@ def main(args: Args) -> None:
                         "action": action,
                     }
                 )
-            obs = env.step(action)
+            try:
+                obs = env.step(action)
+            except Exception as exc:
+                raise SystemExit(
+                    f"Robot/ZMQ stack failed while executing frame {frame_count}: {exc}\n"
+                    "The simulator or robot ZMQ node likely crashed. Inspect the "
+                    "polymetis_sim and robot_zmq tmux panes/logs from "
+                    "./start_polymetis_mujoco_pick_pipeline.sh. If you are using "
+                    "the built-in Polymetis smoke simulator, remember that it is not "
+                    "the FER MuJoCo scene and may reset/crash under commands it cannot track."
+                ) from exc
             frame_count += 1
             if frame_count % args.hz == 0:
                 print(f"t={frame_count / args.hz:.1f}s joints={obs['joint_positions']}")
