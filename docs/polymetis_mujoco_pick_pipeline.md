@@ -28,7 +28,7 @@ The launcher defaults to a visible MuJoCo viewer for the simulated Franka:
 ```bash
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT"
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
 ```
 
 So the normal command should open the MuJoCo window in the `polymetis_sim` tmux pane while the pick client runs in the `pipeline` pane:
@@ -71,6 +71,23 @@ If you want to force a specific clean Polymetis port manually, run for example:
 ```bash
 POLYMETIS_GRPC_PORT=50100 SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
 ```
+
+
+## Polymetis `default_Kq` / `default_Kx` Hydra error
+
+Some Polymetis installs ship `robot_client=mujoco_sim` with metadata fields that interpolate root-level gain values such as `default_Kq`, `default_Kqd`, `default_Kx`, and `default_Kxd`. If those root keys are missing, `launch_robot.py` fails with:
+
+```text
+str interpolation key 'default_Kq' not found
+```
+
+The launcher now supplies those gains by default through `POLYMETIS_SIM_METADATA_OVERRIDES` and includes them in the default `launch_robot.py` command. If your local Hydra config already defines these keys and complains about duplicate `+default_*` overrides, disable the injected overrides with:
+
+```bash
+POLYMETIS_SIM_METADATA_OVERRIDES= SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+```
+
+When you provide a fully custom `POLYMETIS_SIM_CMD`, include the same metadata overrides yourself if your config needs them. The launcher also exports `HYDRA_FULL_ERROR=1` for the simulator window so the captured `polymetis_sim` log contains the full Hydra stack trace.
 
 ## Conda MKL `MKL_INTERFACE_LAYER: unbound variable`
 
@@ -119,9 +136,10 @@ The deterministic agent only replaces GELLO teleoperation; it still emits the sa
 ```bash
 MUJOCO_DIR=/home/tim/mujoco-3.9.0-linux-x86_64
 CONDA_ENV=polymetis
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT"
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
 MUJOCO_GUI=true
 MUJOCO_GL=glfw
+POLYMETIS_SIM_METADATA_OVERRIDES="'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'"
 POLYMETIS_GRPC_PORT=50051
 AUTO_SELECT_POLYMETIS_PORT=1
 RESTART_EXISTING_SESSION=1
@@ -147,7 +165,7 @@ START_POLYMETIS_SIM=0 RESET_STALE_POLYMETIS=0 ./start_polymetis_mujoco_pick_pipe
 If your Polymetis installation uses a different Hydra config name for the MuJoCo simulation, override only the simulator command:
 
 ```bash
-POLYMETIS_SIM_CMD="launch_robot.py robot_client=franka_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT" \
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=franka_sim use_real_time=false gui=true port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES" \
 ./start_polymetis_mujoco_pick_pipeline.sh
 ```
 

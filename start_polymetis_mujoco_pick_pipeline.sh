@@ -22,6 +22,7 @@ LOG_DIR="${LOG_DIR:-/tmp/${SESSION}_logs}"
 RESTART_EXISTING_SESSION="${RESTART_EXISTING_SESSION:-1}"
 KEEP_TMUX_ON_FAILURE="${KEEP_TMUX_ON_FAILURE:-1}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+POLYMETIS_SIM_METADATA_OVERRIDES="${POLYMETIS_SIM_METADATA_OVERRIDES-'+default_Kq=[150,150,150,150,150,150,150]' '+default_Kqd=[10,10,10,10,10,10,10]' '+default_Kx=[50,50,50,50,50,50]' '+default_Kxd=[10,10,10,10,10,10]'}"
 MUJOCO_GL="${MUJOCO_GL:-glfw}"
 MUJOCO_GUI="${MUJOCO_GUI:-true}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-~/lerobot_data/polymetis_mujoco_pick}"
@@ -36,6 +37,7 @@ WRIST_CAMERA_CMD="${WRIST_CAMERA_CMD:-}"
 export MUJOCO_PATH="$MUJOCO_DIR"
 export LD_LIBRARY_PATH="$MUJOCO_DIR/lib:${LD_LIBRARY_PATH:-}"
 export MUJOCO_GL="$MUJOCO_GL"
+export HYDRA_FULL_ERROR="${HYDRA_FULL_ERROR:-1}"
 SESSION_STARTED=0
 cleanup_on_error() {
   local status=$?
@@ -178,10 +180,12 @@ if [[ "$START_POLYMETIS_SIM" == "1" ]] && port_is_open "$POLYMETIS_GRPC_PORT"; t
 fi
 
 if [[ "$POLYMETIS_SIM_CMD_USER_SET" == "0" ]]; then
-  POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI port=$POLYMETIS_GRPC_PORT"
+  POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=$MUJOCO_GUI port=$POLYMETIS_GRPC_PORT $POLYMETIS_SIM_METADATA_OVERRIDES"
 else
-  echo "Using custom POLYMETIS_SIM_CMD. Make sure it binds to port $POLYMETIS_GRPC_PORT or set POLYMETIS_GRPC_PORT to match it."
+  echo "Using custom POLYMETIS_SIM_CMD. Make sure it binds to port $POLYMETIS_GRPC_PORT or set POLYMETIS_GRPC_PORT to match it. If you see default_Kq/default_Kx interpolation errors, include POLYMETIS_SIM_METADATA_OVERRIDES in your custom command."
 fi
+
+echo "Polymetis sim command: $POLYMETIS_SIM_CMD"
 
 if [[ "$SAVE_MODE" == "lerobot" || "$SAVE_MODE" == "recording_stream" ]]; then
   if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
@@ -237,6 +241,7 @@ if [[ "$START_POLYMETIS_SIM" == "1" ]]; then
   tmux send-keys -t "$SESSION:1" "export MUJOCO_PATH='$MUJOCO_DIR'" C-m
   tmux send-keys -t "$SESSION:1" "export LD_LIBRARY_PATH='$MUJOCO_DIR/lib:\${LD_LIBRARY_PATH:-}'" C-m
   tmux send-keys -t "$SESSION:1" "export MUJOCO_GL='$MUJOCO_GL'" C-m
+  tmux send-keys -t "$SESSION:1" "export HYDRA_FULL_ERROR='${HYDRA_FULL_ERROR:-1}'" C-m
   tmux send-keys -t "$SESSION:1" "$POLYMETIS_SIM_CMD" C-m
 fi
 
