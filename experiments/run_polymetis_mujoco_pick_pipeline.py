@@ -1,41 +1,37 @@
-"""Run the real recording pipeline against the FER ROS 2 MuJoCo simulator."""
+"""Run a fixed pick task through the same Polymetis path as the real robot."""
 
 from __future__ import annotations
 
 import datetime
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import tyro
 
-from gello.cameras.ros2_image_camera import Ros2ImageCamera, Ros2ImageCameraConfig
+from gello.agents.hardcoded_panda_pick_agent import HardcodedPandaPickAgent
 from gello.env import RobotEnv
-from gello.robots.fer_mujoco_ros2 import (
-    FerMujocoRos2Config,
-    FerMujocoRos2Robot,
-    HardcodedFerPickAgent,
-)
 from gello.utils.control_utils import LeRobotDatasetWriter
+from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.recording_node import ZMQRecordingPublisher
+from gello.zmq_core.robot_node import ZMQClientRobot
 
 
 @dataclass
 class Args:
+    robot_host: str = "127.0.0.1"
+    robot_port: int = 6001
     hz: int = 30
     steps_per_waypoint: int = 80
     save_mode: Literal["none", "lerobot", "recording_stream"] = "lerobot"
-    use_wrist_camera: bool = True
-    wrist_rgb_topic: str = "/wrist_camera/image_raw"
-    wrist_depth_topic: Optional[str] = "/wrist_camera/depth/image_raw"
-    joint_state_topic: str = "/joint_states"
-    arm_command_topic: str = "/joint_effort_traj_controller/joint_trajectory"
-    gripper_action_name: str = "/gripper_effort_controller/gripper_cmd"
-    lerobot_root: str = "~/lerobot_data/fer_mujoco_pick"
-    lerobot_repo_id: str = "local/fer_mujoco_pick_wrist"
+    use_wrist_camera: bool = False
+    wrist_camera_host: str = "127.0.0.1"
+    wrist_camera_port: int = 5000
+    lerobot_root: str = "~/lerobot_data/polymetis_mujoco_pick"
+    lerobot_repo_id: str = "local/polymetis_mujoco_pick_wrist"
     lerobot_fps: int = 30
-    lerobot_task: str = "Pick the cube from the table in the FER MuJoCo simulator."
-    lerobot_robot_type: str = "fer_mujoco"
+    lerobot_task: str = "Pick the cube in MuJoCo through the Polymetis Panda interface."
+    lerobot_robot_type: str = "panda_polymetis_mujoco"
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     record_stream_host: str = "127.0.0.1"
@@ -44,27 +40,17 @@ class Args:
 
 
 def main(args: Args) -> None:
-    robot = FerMujocoRos2Robot(
-        FerMujocoRos2Config(
-            joint_state_topic=args.joint_state_topic,
-            arm_command_topic=args.arm_command_topic,
-            gripper_action_name=args.gripper_action_name,
-        )
-    )
+    robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
     camera_dict = {}
     if args.use_wrist_camera:
-        camera_dict["wrist"] = Ros2ImageCamera(
-            Ros2ImageCameraConfig(
-                rgb_topic=args.wrist_rgb_topic,
-                depth_topic=args.wrist_depth_topic,
-            )
+        camera_dict["wrist"] = ZMQClientCamera(
+            port=args.wrist_camera_port, host=args.wrist_camera_host
         )
     env = RobotEnv(robot, control_rate_hz=args.hz, camera_dict=camera_dict)
-    agent = HardcodedFerPickAgent(steps_per_waypoint=args.steps_per_waypoint)
+    agent = HardcodedPandaPickAgent(steps_per_waypoint=args.steps_per_waypoint)
 
     writer = None
     publisher = None
-    camera_keys = ("wrist",) if args.use_wrist_camera else tuple()
     if args.save_mode == "lerobot":
         writer = LeRobotDatasetWriter(
             root=args.lerobot_root,
@@ -72,7 +58,7 @@ def main(args: Args) -> None:
             fps=args.lerobot_fps,
             task=args.lerobot_task,
             robot_type=args.lerobot_robot_type,
-            camera_keys=camera_keys,
+            camera_keys=("wrist",) if args.use_wrist_camera else tuple(),
             streaming_encoding=args.lerobot_streaming_encoding,
             batch_encoding_size=args.lerobot_batch_encoding_size,
         )
@@ -86,9 +72,10 @@ def main(args: Args) -> None:
             {"type": "start", "timestamp": datetime.datetime.now().isoformat()}
         )
 
-    print("FER MuJoCo pick pipeline started")
+    print("Polymetis MuJoCo pick pipeline started")
     print(
-        f"save_mode={args.save_mode}, hz={args.hz}, wrist_camera={args.use_wrist_camera}"
+        f"save_mode={args.save_mode}, hz={args.hz}, "
+        f"use_wrist_camera={args.use_wrist_camera}"
     )
 
     frame_count = 0
@@ -124,7 +111,6 @@ def main(args: Args) -> None:
             )
             publisher.close()
             print(f"Streamed one recording episode with {frame_count} frames")
-        robot.close()
 
 
 if __name__ == "__main__":
