@@ -15,11 +15,33 @@ cd /home/tim/gello_software
 
 The launcher opens a tmux session and starts, in order:
 
-1. a MuJoCo-backed Polymetis robot server,
+1. a visible MuJoCo-backed Polymetis robot server,
 2. this repo's regular ZMQ robot node with `--robot panda --robot-ip 127.0.0.1`,
 3. optional wrist-camera ZMQ process,
 4. optional LeRobot stream recorder,
 5. the deterministic pick-policy client.
+
+## Visible MuJoCo Franka viewer
+
+The launcher defaults to a visible MuJoCo viewer for the simulated Franka:
+
+```bash
+MUJOCO_GUI=true
+MUJOCO_GL=glfw
+POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true"
+```
+
+So the normal command should open the MuJoCo window in the `polymetis_sim` tmux pane while the pick client runs in the `pipeline` pane:
+
+```bash
+SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+```
+
+If you are running over SSH, make sure X forwarding or your local display is available. The launcher warns when `MUJOCO_GUI=true` but `DISPLAY` is missing. If you intentionally need headless mode, run:
+
+```bash
+MUJOCO_GUI=false SAVE_MODE=none ./start_polymetis_mujoco_pick_pipeline.sh
+```
 
 ## Reset after a failed run
 
@@ -31,6 +53,17 @@ cd /home/tim/gello_software
 ```
 
 The start launcher also performs this cleanup automatically by default when `START_POLYMETIS_SIM=1`.
+
+
+## Conda MKL `MKL_INTERFACE_LAYER: unbound variable`
+
+The launcher uses `set -u` for safer shell scripting, but some conda activation hooks read unset variables. The script now temporarily disables `nounset` only around `conda activate`, so this error should no longer stop startup:
+
+```text
+libblas_mkl_activate.sh: line 1: MKL_INTERFACE_LAYER: unbound variable
+```
+
+You do not need to pre-activate the environment manually; run the launcher directly from the repo.
 
 ## First movement-only smoke test
 
@@ -70,6 +103,8 @@ The deterministic agent only replaces GELLO teleoperation; it still emits the sa
 MUJOCO_DIR=/home/tim/mujoco-3.9.0-linux-x86_64
 CONDA_ENV=polymetis
 POLYMETIS_SIM_CMD="launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true"
+MUJOCO_GUI=true
+MUJOCO_GL=glfw
 POLYMETIS_GRPC_PORT=50051
 RESET_STALE_POLYMETIS=1
 SAVE_MODE=lerobot
@@ -113,6 +148,7 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate polymetis
 export MUJOCO_PATH=/home/tim/mujoco-3.9.0-linux-x86_64
 export LD_LIBRARY_PATH=$MUJOCO_PATH/lib:${LD_LIBRARY_PATH:-}
+export MUJOCO_GL=glfw
 pkill -9 run_server 2>/dev/null || true
 launch_robot.py robot_client=mujoco_sim use_real_time=false gui=true
 ```
