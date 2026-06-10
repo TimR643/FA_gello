@@ -304,12 +304,19 @@ class LeRobotSaveInterface:
 class RecordingStreamInterface:
     """Keyboard-controlled non-blocking recording stream publisher."""
 
-    def __init__(self, host: str, port: int, send_hwm: int = 2):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        send_hwm: int = 2,
+        include_camera_data: bool = True,
+    ):
         from gello.data_utils.keyboard_interface import KBReset
         from gello.zmq_core.recording_node import ZMQRecordingPublisher
 
         self.kb_interface = KBReset()
         self.publisher = ZMQRecordingPublisher(host=host, port=port, send_hwm=send_hwm)
+        self.include_camera_data = include_camera_data
         self._recording = False
         self._dropped_frames = 0
 
@@ -326,6 +333,21 @@ class RecordingStreamInterface:
                     f"control real-time safe (dropped={self._dropped_frames})."
                 )
 
+    def _stream_obs(self, obs: Dict[str, Any]) -> Dict[str, Any]:
+        if self.include_camera_data:
+            return obs
+
+        return {
+            key: np.asarray(obs[key])
+            for key in (
+                "joint_positions",
+                "joint_velocities",
+                "ee_pos_quat",
+                "gripper_position",
+            )
+            if key in obs
+        }
+
     def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
         state = self.kb_interface.update()
         if state == "start":
@@ -337,7 +359,7 @@ class RecordingStreamInterface:
                 {
                     "type": "frame",
                     "timestamp": datetime.datetime.now().isoformat(),
-                    "obs": obs,
+                    "obs": self._stream_obs(obs),
                     "action": action,
                 }
             )

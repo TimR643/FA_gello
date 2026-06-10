@@ -27,6 +27,7 @@ class Args:
     robot_port: int = 6001
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
+    use_wrist_camera: bool = True
     use_base_camera: bool = True
     hostname: str = "127.0.0.1"
     robot_hostname: Optional[str] = None
@@ -43,6 +44,7 @@ class Args:
     record_stream_host: str = "127.0.0.1"
     record_stream_port: int = 7000
     record_stream_hwm: int = 2
+    record_stream_include_camera_data: bool = True
     lerobot_root: str = "~/lerobot_data"
     lerobot_repo_id: str = "local/panda_gello"
     lerobot_fps: int = 10
@@ -66,10 +68,11 @@ def main(args):
         robot_host = args.robot_hostname or args.hostname
         camera_host = args.camera_hostname or args.hostname
 
-        camera_clients = {
-            # you can optionally add camera nodes here for imitation learning purposes
-            "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=camera_host),
-        }
+        camera_clients = {}
+        if args.use_wrist_camera:
+            camera_clients["wrist"] = ZMQClientCamera(
+                port=args.wrist_camera_port, host=camera_host
+            )
         if args.use_base_camera:
             camera_clients["base"] = ZMQClientCamera(
                 port=args.base_camera_port, host=camera_host
@@ -268,7 +271,14 @@ def main(args):
                 fps=args.lerobot_fps,
                 task=args.lerobot_task,
                 robot_type=args.lerobot_robot_type,
-                camera_keys=("wrist", "base") if args.use_base_camera else ("wrist",),
+                camera_keys=tuple(
+                    camera
+                    for camera, enabled in (
+                        ("wrist", args.use_wrist_camera),
+                        ("base", args.use_base_camera),
+                    )
+                    if enabled
+                ),
                 streaming_encoding=args.lerobot_streaming_encoding,
                 batch_encoding_size=args.lerobot_batch_encoding_size,
             )
@@ -277,6 +287,7 @@ def main(args):
                 host=args.record_stream_host,
                 port=args.record_stream_port,
                 send_hwm=args.record_stream_hwm,
+                include_camera_data=args.record_stream_include_camera_data,
             )
         else:
             save_interface = SaveInterface(
