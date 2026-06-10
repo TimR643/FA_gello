@@ -158,6 +158,8 @@ class KeyboardEpisodeRecorder:
         self.state = "recording"
         on_start()
         period = 1.0 / self.fps
+        frame_count = 0
+        LOGGER.info("Episode started. Press Q in the pygame window to stop/save it.")
 
         while True:
             started = time.time()
@@ -165,8 +167,13 @@ class KeyboardEpisodeRecorder:
             if kb_state == "normal":
                 break
 
+            if frame_count == 0:
+                LOGGER.info("Collecting first observation/action frame...")
             obs, action = frame_fn()
             self.writer.add_frame(obs, action)
+            frame_count += 1
+            if frame_count == 1:
+                LOGGER.info("First frame recorded successfully.")
 
             remaining = period - (time.time() - started)
             if remaining > 0:
@@ -281,12 +288,27 @@ def resolve_pretrained_path(path: str) -> str:
     )
 
 
+def configure_zmq_timeout(client: Any, timeout_ms: int, *, name: str) -> None:
+    """Apply send/receive timeouts to repo ZMQ clients that expose _socket."""
+
+    socket = getattr(client, "_socket", None)
+    if socket is None:
+        return
+
+    import zmq
+
+    socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    LOGGER.debug("Configured %s ZMQ timeout to %sms", name, timeout_ms)
+
+
 def make_camera_clients(
     *,
     camera_host: str,
     wrist_camera_port: int,
     base_camera_port: int,
     cameras: Tuple[str, ...],
+    timeout_ms: int,
 ) -> Dict[str, ZMQClientCamera]:
     clients: Dict[str, ZMQClientCamera] = {}
     for camera in cameras:
@@ -294,6 +316,7 @@ def make_camera_clients(
             clients[camera] = ZMQClientCamera(port=wrist_camera_port, host=camera_host)
         elif camera == "base":
             clients[camera] = ZMQClientCamera(port=base_camera_port, host=camera_host)
+        configure_zmq_timeout(clients[camera], timeout_ms, name=f"{camera} camera")
     return clients
 
 
@@ -505,7 +528,9 @@ def make_robot_client(args: argparse.Namespace) -> Any:
     """
 
     if args.robot_backend == "zmq":
-        return ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+        robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+        configure_zmq_timeout(robot, args.zmq_timeout_ms, name="robot")
+        return robot
 
     if args.robot_backend == "polymetis":
         from gello.robots.panda import PandaRobot
@@ -631,6 +656,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--robot-port", type=int, default=6001, help="ZMQ robot server port"
+    )
+    parser.add_argument(
+        "--zmq-timeout-ms",
+        type=int,
+        default=5000,
+        help="Timeout for ZMQ robot/camera requests; prevents hanging after S if a tunnel/server is down",
     )
     parser.add_argument(
         "--robot-ip",
@@ -797,6 +828,7 @@ def main() -> None:
                 wrist_camera_port=args.wrist_camera_port,
                 base_camera_port=args.base_camera_port,
                 cameras=args.cameras,
+                timeout_ms=args.zmq_timeout_ms,
             ),
         )
 
