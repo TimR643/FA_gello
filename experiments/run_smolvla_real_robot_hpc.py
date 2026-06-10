@@ -9,9 +9,11 @@ It is made for a SmolVLA policy trained with:
 
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -64,51 +66,114 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
         elif camera == "base":
             clients[camera] = ZMQClientCamera(port=args.base_camera_port, host=host)
         else:
-            raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
+            raise ValueError(
+                f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
+            )
 
     return clients
 
 
-def _load_lerobot_policy_ignore_dataset_meta(
+SMOLVLA_IMAGE_FEATURES = (
+    "observation.images.camera1",
+    "observation.images.camera2",
+    "observation.images.camera3",
+    "observation.images.empty_camera_0",
+    "observation.images.empty_camera_1",
+)
+
+
+def _copy_mapping_with_updates(
+    original: Any, updates: Dict[str, Any], remove: Sequence[str] = ()
+) -> Dict[str, Any]:
+    copied = copy.deepcopy(dict(original))
+    for key in remove:
+        copied.pop(key, None)
+    copied.update(updates)
+    return copied
+
+
+def _copy_meta_with_features_and_stats(
+    dataset_meta: Any, features: Any, stats: Optional[Any]
+) -> Any:
+    try:
+        patched = copy.copy(dataset_meta)
+        setattr(patched, "features", features)
+        if stats is not None:
+            setattr(patched, "stats", stats)
+        return patched
+    except Exception:
+        attrs = dict(getattr(dataset_meta, "__dict__", {}))
+        attrs["features"] = features
+        if stats is not None:
+            attrs["stats"] = stats
+        return SimpleNamespace(**attrs)
+
+
+def _make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
+    """Patch dataset metadata so LeRobot make_policy accepts SmolVLA cameras."""
+
+    features = getattr(dataset_meta, "features", None)
+    if features is None and isinstance(dataset_meta, Mapping):
+        features = dataset_meta.get("features")
+    if features is None or "observation.images.wrist" not in features:
+        return dataset_meta
+
+    wrist_feature = copy.deepcopy(features["observation.images.wrist"])
+    feature_updates = {
+        key: copy.deepcopy(wrist_feature) for key in SMOLVLA_IMAGE_FEATURES
+    }
+    patched_features = _copy_mapping_with_updates(
+        features, feature_updates, remove=("observation.images.wrist",)
+    )
+
+    stats = getattr(dataset_meta, "stats", None)
+    if stats is None and isinstance(dataset_meta, Mapping):
+        stats = dataset_meta.get("stats")
+
+    patched_stats = None
+    if stats is not None:
+        stat_updates = {}
+        if "observation.images.wrist" in stats:
+            wrist_stats = copy.deepcopy(stats["observation.images.wrist"])
+            stat_updates = {
+                key: copy.deepcopy(wrist_stats) for key in SMOLVLA_IMAGE_FEATURES
+            }
+        patched_stats = _copy_mapping_with_updates(
+            stats, stat_updates, remove=("observation.images.wrist",)
+        )
+
+    print(
+        "Patched SmolVLA metadata: observation.images.wrist -> "
+        "camera1/camera2/camera3/empty_camera_0/empty_camera_1"
+    )
+    return _copy_meta_with_features_and_stats(
+        dataset_meta, patched_features, patched_stats
+    )
+
+
+def _load_lerobot_policy_with_patched_meta(
     checkpoint: str,
     dataset_root: str,
     repo_id: str,
     device: Optional[str],
 ):
-    """Load policy while forcing make_policy(..., ds_meta=None).
+    """Load policy like real_robot.load_lerobot_policy, with SmolVLA camera metadata patched."""
 
-    This avoids:
-        dataset meta: observation.images.wrist
-        policy cfg : observation.images.camera1/camera2/camera3
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import make_policy
 
-    Patch is local to this Python process only.
-    """
-
-    loader_globals = real_robot.load_lerobot_policy.__globals__
-
-    if "make_policy" not in loader_globals:
-        raise RuntimeError(
-            "Could not find make_policy inside load_lerobot_policy globals. "
-            "Please inspect gello/lerobot/real_robot.py."
-        )
-
-    original_make_policy = loader_globals["make_policy"]
-
-    def patched_make_policy(*args, **kwargs):
-        kwargs["ds_meta"] = None
-        return original_make_policy(*args, **kwargs)
-
-    loader_globals["make_policy"] = patched_make_policy
-
-    try:
-        return real_robot.load_lerobot_policy(
-            checkpoint=checkpoint,
-            dataset_root=dataset_root,
-            repo_id=repo_id,
-            device=device,
-        )
-    finally:
-        loader_globals["make_policy"] = original_make_policy
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
+    cfg = PreTrainedConfig.from_pretrained(checkpoint)
+    cfg.device = resolved_device
+    policy_meta = _make_smolvla_dataset_meta(dataset.meta)
+    policy = make_policy(cfg=cfg, ds_meta=policy_meta)
+    policy.to(resolved_device)
+    policy.eval()
+    return real_robot.PolicyBundle(
+        policy=policy, dataset=dataset, device=resolved_device
+    )
 
 
 def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
@@ -116,7 +181,10 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     batch["robot_type"] = [""]
 
     # Runtime mapping: live wrist camera -> policy camera1
-    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
+    if (
+        "observation.images.wrist" in batch
+        and "observation.images.camera1" not in batch
+    ):
         batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
 
     if "observation.images.camera1" not in batch:
@@ -134,11 +202,17 @@ def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
     if "observation.images.camera3" not in batch:
         batch["observation.images.camera3"] = torch.zeros_like(cam1)
 
+    if "observation.images.empty_camera_0" not in batch:
+        batch["observation.images.empty_camera_0"] = torch.zeros_like(cam1)
+
+    if "observation.images.empty_camera_1" not in batch:
+        batch["observation.images.empty_camera_1"] = torch.zeros_like(cam1)
+
     return batch
 
 
 def main(args: Args) -> None:
-    bundle = _load_lerobot_policy_ignore_dataset_meta(
+    bundle = _load_lerobot_policy_with_patched_meta(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
