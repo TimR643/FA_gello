@@ -33,7 +33,7 @@ class Args:
 
     lerobot_root: str = "~/lerobot_data"
     lerobot_repo_id: str = "local/panda_gello_remote_cameras"
-    lerobot_fps: int = 10
+    lerobot_fps: int = 20
     lerobot_task: str = "Teleoperate Panda with GELLO."
     lerobot_robot_type: str = "panda_gello"
     lerobot_streaming_encoding: bool = True

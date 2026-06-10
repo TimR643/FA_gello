@@ -19,7 +19,7 @@ BASE_PORT="${BASE_PORT:-5001}"
 
 LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/left_green_right_red}"
 LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/left_green_right_red}"
-LEROBOT_FPS="${LEROBOT_FPS:-10}"
+LEROBOT_FPS="${LEROBOT_FPS:-20}"
 LEROBOT_TASK="${LEROBOT_TASK:-turn right if the red block is visible, turn left if the green block is visible}"
 LEROBOT_ROBOT_TYPE="${LEROBOT_ROBOT_TYPE:-panda_gello}"
 LEROBOT_BATCH_ENCODING_SIZE="${LEROBOT_BATCH_ENCODING_SIZE:-1}"
