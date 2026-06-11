@@ -8,9 +8,10 @@ This version is adapted for a SmolVLA policy trained with:
 and:
     policy.empty_cameras=2
 
-So at runtime:
+So at runtime by default:
     live wrist camera  -> observation.images.camera1
-    camera2/camera3    -> zero dummy images
+    live base camera   -> observation.images.camera2 (when --cameras wrist base)
+    camera3            -> zero dummy image
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     cameras: Tuple[str, ...] = ("wrist",)
+    smolvla_image_keys: Tuple[str, ...] = ("camera1", "camera2", "camera3")
 
     duration: float = 10.0
     hz: float = 2.0
@@ -82,46 +84,43 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     return clients
 
 
-def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
+def _prepare_smolvla_batch(
+    batch: dict, task: str, smolvla_image_keys: Tuple[str, ...]
+) -> dict:
     """Prepare live GELLO/LeRobot batch for SmolVLA inference.
 
-    The live robot adapter creates:
+    The live robot adapter creates keys such as:
         observation.images.wrist
+        observation.images.base
 
-    The trained SmolVLA policy expects:
-        observation.images.camera1
-        observation.images.camera2
-        observation.images.camera3
-
-    because the dataset was trained with:
-        --rename_map='{"observation.images.wrist": "observation.images.camera1"}'
-        --policy.empty_cameras=2
+    SmolVLA trainings in this repository commonly use generic camera keys such
+    as camera1/camera2/camera3. Runtime mapping is positional: the cameras
+    passed via ``--cameras`` are mapped, in insertion order, to
+    ``--smolvla-image-keys``. Missing SmolVLA image keys are filled with black
+    dummy images so checkpoints trained with empty cameras can still run.
     """
 
-    # SmolVLA needs a language instruction.
-    # Keep it as a list with batch size 1.
     batch["task"] = [task]
     batch["robot_type"] = [""]
 
-    # Map the real wrist camera to the name used during training.
-    if "observation.images.wrist" in batch and "observation.images.camera1" not in batch:
-        batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
+    live_image_keys = [
+        key for key in list(batch.keys()) if key.startswith("observation.images.")
+    ]
+    if not live_image_keys:
+        raise KeyError("Missing live image observations for SmolVLA inference.")
 
-    if "observation.images.camera1" not in batch:
-        raise KeyError(
-            "Missing observation.images.camera1. "
-            "Expected live wrist image to be available as observation.images.wrist "
-            "and then renamed to observation.images.camera1."
-        )
+    first_image = batch[live_image_keys[0]]
+    for live_key, smolvla_key in zip(live_image_keys, smolvla_image_keys):
+        target_key = f"observation.images.{smolvla_key}"
+        if target_key not in batch:
+            batch[target_key] = batch[live_key]
+        if live_key != target_key:
+            batch.pop(live_key, None)
 
-    # Add dummy empty cameras for SmolVLA if the policy config expects camera2/camera3.
-    cam1 = batch["observation.images.camera1"]
-
-    if "observation.images.camera2" not in batch:
-        batch["observation.images.camera2"] = torch.zeros_like(cam1)
-
-    if "observation.images.camera3" not in batch:
-        batch["observation.images.camera3"] = torch.zeros_like(cam1)
+    for smolvla_key in smolvla_image_keys:
+        target_key = f"observation.images.{smolvla_key}"
+        if target_key not in batch:
+            batch[target_key] = torch.zeros_like(first_image)
 
     return batch
 
@@ -172,6 +171,7 @@ def main(args: Args) -> None:
     print("repo_id:", args.repo_id)
     print("device:", bundle.device)
     print("live cameras:", args.cameras)
+    print("SmolVLA image keys:", args.smolvla_image_keys)
     print("execute:", args.execute)
     print("duration:", args.duration)
     print("hz:", args.hz)
@@ -181,9 +181,11 @@ def main(args: Args) -> None:
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
-    print("  observation.images.wrist   -> observation.images.camera1")
-    print("  observation.images.camera2 -> zeros_like(camera1)")
-    print("  observation.images.camera3 -> zeros_like(camera1)")
+    for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
+        print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
+    if len(args.smolvla_image_keys) > len(args.cameras):
+        for smolvla_key in args.smolvla_image_keys[len(args.cameras):]:
+            print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but the robot will not move.")
@@ -209,7 +211,7 @@ def main(args: Args) -> None:
         state = adapter.state_from_obs(obs)
 
         with torch.no_grad():
-            batch = _prepare_smolvla_batch(batch, args.task)
+            batch = _prepare_smolvla_batch(batch, args.task, args.smolvla_image_keys)
             batch = preprocess(batch)
 
             policy_action = bundle.policy.select_action(batch)
