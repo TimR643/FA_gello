@@ -71,6 +71,7 @@ class Args:
     print_action_state_diagnostics: bool = True
     print_camera_color_diagnostics: bool = False
     camera_color_margin: float = 25.0
+    camera_color_min_fraction: float = 0.002
     debug_image_dir: Optional[str] = None
     debug_save_image_every_n_steps: int = 20
 
@@ -325,6 +326,7 @@ def main(args: Args) -> None:
     print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
     print("camera_color_margin:", args.camera_color_margin)
+    print("camera_color_min_fraction:", args.camera_color_min_fraction)
     print("debug_image_dir:", args.debug_image_dir)
     print("debug_save_image_every_n_steps:", args.debug_save_image_every_n_steps)
     print("task:", args.task)
@@ -382,6 +384,16 @@ def main(args: Args) -> None:
                 summary = summarize_rgb_image(
                     obs[f"{camera}_rgb"], dominance_margin=args.camera_color_margin
                 )
+                red_visible = summary.red_fraction >= args.camera_color_min_fraction
+                green_visible = summary.green_fraction >= args.camera_color_min_fraction
+                if red_visible and green_visible:
+                    color_guess = "mixed"
+                elif red_visible:
+                    color_guess = "red"
+                elif green_visible:
+                    color_guess = "green"
+                else:
+                    color_guess = "none"
                 print(
                     f"camera {camera:>5s} : "
                     f"rgb_mean=({summary.red_mean:.1f}, "
@@ -389,7 +401,8 @@ def main(args: Args) -> None:
                     f"red_dom={summary.red_dominance:.1f} "
                     f"green_dom={summary.green_dominance:.1f} "
                     f"red_px={100.0 * summary.red_fraction:.2f}% "
-                    f"green_px={100.0 * summary.green_fraction:.2f}%"
+                    f"green_px={100.0 * summary.green_fraction:.2f}% "
+                    f"guess={color_guess}"
                 )
 
         if (
