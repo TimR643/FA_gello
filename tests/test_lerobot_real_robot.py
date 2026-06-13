@@ -6,6 +6,7 @@ from gello.lerobot.real_robot import (
     LeRobotObservationAdapter,
     SafeJointActionExecutor,
     SafetyConfig,
+    diagnose_action_state_interpretation,
     validate_policy_batch_keys,
 )
 
@@ -65,3 +66,27 @@ def test_validate_policy_batch_keys_detects_schema_mismatch():
 
     with pytest.raises(KeyError, match="observation.images.base"):
         validate_policy_batch_keys(adapter, Meta())
+
+
+def test_diagnostics_flag_likely_delta_action_when_absolute_delta_is_large():
+    current = np.array([0.0, 0.0, 1.0, -2.3, 0.0, 2.3, -0.8, 0.1], dtype=np.float32)
+    action = np.array(
+        [0.01, 0.01, 0.02, -0.01, 0.0, 0.01, 0.0, 0.0], dtype=np.float32
+    )
+
+    diagnostics = diagnose_action_state_interpretation(action, current)
+
+    assert diagnostics.likely_delta_action
+    np.testing.assert_allclose(diagnostics.absolute_delta, action - current)
+    np.testing.assert_allclose(diagnostics.delta_target, action + current)
+
+
+def test_diagnostics_do_not_flag_absolute_targets_close_to_state():
+    current = np.array([0.0, 0.0, 1.0, -2.3, 0.0, 2.3, -0.8, 0.1], dtype=np.float32)
+    action = current + np.array(
+        [0.01, 0.01, 0.02, -0.01, 0.0, 0.01, 0.0, 0.0], dtype=np.float32
+    )
+
+    diagnostics = diagnose_action_state_interpretation(action, current)
+
+    assert not diagnostics.likely_delta_action
