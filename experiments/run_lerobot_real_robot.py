@@ -76,6 +76,7 @@ class Args:
     debug_save_image_every_n_steps: int = 20
     debug_counterfactual_tasks: Tuple[str, ...] = ()
     reset_policy_every_step: bool = False
+    zero_live_cameras: Tuple[str, ...] = ()
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -340,6 +341,7 @@ def main(args: Args) -> None:
     print("debug_save_image_every_n_steps:", args.debug_save_image_every_n_steps)
     print("debug_counterfactual_tasks:", args.debug_counterfactual_tasks)
     print("reset_policy_every_step:", args.reset_policy_every_step)
+    print("zero_live_cameras:", args.zero_live_cameras)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -371,6 +373,14 @@ def main(args: Args) -> None:
 
         obs = env.get_obs()
         batch = adapter.make_batch(obs)
+        for camera in args.zero_live_cameras:
+            key = f"observation.images.{camera}"
+            if key not in batch:
+                raise KeyError(
+                    f"Cannot zero missing live camera {camera!r}; "
+                    f"available batch keys: {list(batch.keys())}"
+                )
+            batch[key] = torch.zeros_like(batch[key])
         state = adapter.state_from_obs(obs)
 
         if args.reset_policy_every_step:
@@ -393,6 +403,9 @@ def main(args: Args) -> None:
                 for counterfactual_task in args.debug_counterfactual_tasks:
                     _reset_policy(bundle.policy)
                     cf_batch = adapter.make_batch(obs)
+                    for camera in args.zero_live_cameras:
+                        key = f"observation.images.{camera}"
+                        cf_batch[key] = torch.zeros_like(cf_batch[key])
                     cf_batch = _prepare_smolvla_batch(
                         cf_batch,
                         counterfactual_task,
