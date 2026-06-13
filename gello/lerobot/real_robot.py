@@ -25,6 +25,100 @@ PANDA_UPPER = np.array(
 
 
 @dataclass(frozen=True)
+class ActionStateDiagnostics:
+    """Numerical checks for policy action/current-state interpretation.
+
+    ``absolute_delta`` is the displacement that will be applied when policy
+    outputs are interpreted as absolute joint targets. ``delta_target`` is the
+    target that would be sent if the same policy output were interpreted as a
+    delta action. These values make absolute-vs-delta mistakes visible in the
+    rollout log without moving the robot differently.
+    """
+
+    absolute_delta: np.ndarray
+    delta_target: np.ndarray
+    action_l2: float
+    absolute_delta_l2: float
+    likely_delta_action: bool
+
+
+def diagnose_action_state_interpretation(
+    policy_action: Any, current_state: np.ndarray, *, delta_threshold: float = 0.35
+) -> ActionStateDiagnostics:
+    """Return diagnostics that help spot state/action convention mismatches.
+
+    LeRobot datasets in this repository normally store absolute joint targets in
+    ``action`` and absolute robot positions in ``observation.state``. If a model
+    instead emits small near-zero values for all joints, treating those values as
+    absolute targets makes the robot drift toward zero. This helper compares the
+    policy output to the current state and reports whether the output magnitude
+    looks more like a delta action than an absolute target.
+    """
+
+    if hasattr(policy_action, "detach"):
+        policy_action = policy_action.squeeze(0).detach().cpu().numpy()
+    action = np.asarray(policy_action, dtype=np.float32).reshape(-1)
+    current = np.asarray(current_state, dtype=np.float32).reshape(-1)
+    if action.shape != current.shape:
+        raise ValueError(
+            f"Expected action/current shapes to match, got {action.shape} and {current.shape}"
+        )
+
+    absolute_delta = action - current
+    delta_target = current + action
+    action_l2 = float(np.linalg.norm(action[:-1] if action.size > 1 else action))
+    absolute_delta_l2 = float(
+        np.linalg.norm(
+            absolute_delta[:-1] if absolute_delta.size > 1 else absolute_delta
+        )
+    )
+    likely_delta_action = (
+        action_l2 < delta_threshold and absolute_delta_l2 > delta_threshold
+    )
+    return ActionStateDiagnostics(
+        absolute_delta=absolute_delta.astype(np.float32),
+        delta_target=delta_target.astype(np.float32),
+        action_l2=action_l2,
+        absolute_delta_l2=absolute_delta_l2,
+        likely_delta_action=likely_delta_action,
+    )
+
+
+@dataclass(frozen=True)
+class RgbChannelSummary:
+    """Simple RGB statistics for checking camera/color routing at runtime."""
+
+    red_mean: float
+    green_mean: float
+    blue_mean: float
+    red_dominance: float
+    green_dominance: float
+
+
+def summarize_rgb_image(image: Any) -> RgbChannelSummary:
+    """Summarize an HxWx3 RGB image without changing policy inputs.
+
+    Positive ``red_dominance`` means the red channel is stronger than both other
+    channels on average; positive ``green_dominance`` means the same for green.
+    This is a lightweight sanity check for RGB/BGR mistakes and camera routing.
+    """
+
+    img = np.asarray(image)
+    if img.ndim != 3 or img.shape[2] != 3:
+        raise ValueError(f"Expected HxWx3 RGB image, got shape {img.shape}")
+    img = img.astype(np.float32)
+    means = img.reshape(-1, 3).mean(axis=0)
+    red_mean, green_mean, blue_mean = (float(value) for value in means)
+    return RgbChannelSummary(
+        red_mean=red_mean,
+        green_mean=green_mean,
+        blue_mean=blue_mean,
+        red_dominance=red_mean - max(green_mean, blue_mean),
+        green_dominance=green_mean - max(red_mean, blue_mean),
+    )
+
+
+@dataclass(frozen=True)
 class PolicyBundle:
     """Loaded LeRobot policy and the dataset metadata used for construction."""
 

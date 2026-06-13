@@ -33,6 +33,8 @@ from gello.lerobot.real_robot import (
     SafeJointActionExecutor,
     PolicyBundle,
     SafetyConfig,
+    diagnose_action_state_interpretation,
+    summarize_rgb_image,
 )
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
@@ -65,6 +67,8 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    print_action_state_diagnostics: bool = True
+    print_camera_color_diagnostics: bool = False
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -200,7 +204,10 @@ def _load_smolvla_policy(
 
 
 def _prepare_smolvla_batch(
-    batch: dict, task: str, smolvla_image_keys: Tuple[str, ...]
+    batch: dict,
+    task: str,
+    cameras: Tuple[str, ...],
+    smolvla_image_keys: Tuple[str, ...],
 ) -> dict:
     """Prepare live GELLO/LeRobot batch for SmolVLA inference.
 
@@ -218,14 +225,17 @@ def _prepare_smolvla_batch(
     batch["task"] = [task]
     batch["robot_type"] = [""]
 
-    live_image_keys = [
-        key for key in list(batch.keys()) if key.startswith("observation.images.")
-    ]
-    if not live_image_keys:
-        raise KeyError("Missing live image observations for SmolVLA inference.")
+    live_image_keys = [f"observation.images.{camera}" for camera in cameras]
+    missing_live_keys = [key for key in live_image_keys if key not in batch]
+    if missing_live_keys:
+        raise KeyError(
+            "Missing live image observations for SmolVLA inference: "
+            f"{missing_live_keys}. Available keys: {list(batch.keys())}"
+        )
 
     first_image = batch[live_image_keys[0]]
-    for live_key, smolvla_key in zip(live_image_keys, smolvla_image_keys):
+    for camera, smolvla_key in zip(cameras, smolvla_image_keys):
+        live_key = f"observation.images.{camera}"
         target_key = f"observation.images.{smolvla_key}"
         if target_key not in batch:
             batch[target_key] = batch[live_key]
@@ -295,6 +305,8 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
+    print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -328,13 +340,16 @@ def main(args: Args) -> None:
         state = adapter.state_from_obs(obs)
 
         with torch.no_grad():
-            batch = _prepare_smolvla_batch(batch, args.task, args.smolvla_image_keys)
+            batch = _prepare_smolvla_batch(
+                batch, args.task, args.cameras, args.smolvla_image_keys
+            )
             batch = preprocess(batch)
 
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
 
         safe = executor.make_safe_target(policy_action, state)
+        diagnostics = diagnose_action_state_interpretation(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
         print("state         :", np.round(state, 3))
@@ -342,6 +357,25 @@ def main(args: Args) -> None:
         print("raw_delta     :", np.round(safe.raw_delta, 3))
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
+        if args.print_camera_color_diagnostics:
+            for camera in args.cameras:
+                summary = summarize_rgb_image(obs[f"{camera}_rgb"])
+                print(
+                    f"camera {camera:>5s} : "
+                    f"rgb_mean=({summary.red_mean:.1f}, "
+                    f"{summary.green_mean:.1f}, {summary.blue_mean:.1f}) "
+                    f"red_dom={summary.red_dominance:.1f} "
+                    f"green_dom={summary.green_dominance:.1f}"
+                )
+        if args.print_action_state_diagnostics:
+            print("abs_delta_l2  :", round(diagnostics.absolute_delta_l2, 3))
+            print("action_l2     :", round(diagnostics.action_l2, 3))
+            print("delta_target  :", np.round(diagnostics.delta_target, 3))
+            if diagnostics.likely_delta_action and args.action_mode == "absolute_joint_position":
+                print(
+                    "WARNING      : policy output is small while absolute delta is large; "
+                    "this looks more like delta_joint_position than absolute_joint_position."
+                )
 
         if args.execute:
             env.step(safe.target)
