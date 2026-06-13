@@ -74,6 +74,7 @@ class Args:
     camera_color_min_fraction: float = 0.002
     debug_image_dir: Optional[str] = None
     debug_save_image_every_n_steps: int = 20
+    debug_counterfactual_tasks: Tuple[str, ...] = ()
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -329,6 +330,7 @@ def main(args: Args) -> None:
     print("camera_color_min_fraction:", args.camera_color_min_fraction)
     print("debug_image_dir:", args.debug_image_dir)
     print("debug_save_image_every_n_steps:", args.debug_save_image_every_n_steps)
+    print("debug_counterfactual_tasks:", args.debug_counterfactual_tasks)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -372,6 +374,22 @@ def main(args: Args) -> None:
 
         safe = executor.make_safe_target(policy_action, state)
         diagnostics = diagnose_action_state_interpretation(policy_action, state)
+        counterfactual_results = []
+        if args.debug_counterfactual_tasks:
+            with torch.no_grad():
+                for counterfactual_task in args.debug_counterfactual_tasks:
+                    cf_batch = adapter.make_batch(obs)
+                    cf_batch = _prepare_smolvla_batch(
+                        cf_batch,
+                        counterfactual_task,
+                        args.cameras,
+                        args.smolvla_image_keys,
+                    )
+                    cf_batch = preprocess(cf_batch)
+                    cf_action = bundle.policy.select_action(cf_batch)
+                    cf_action = postprocess(cf_action)
+                    cf_safe = executor.make_safe_target(cf_action, state)
+                    counterfactual_results.append((counterfactual_task, cf_safe))
 
         print(f"\nStep {step + 1}/{steps}")
         print("state         :", np.round(state, 3))
@@ -425,6 +443,12 @@ def main(args: Args) -> None:
                     "WARNING      : policy output is small while absolute delta is large; "
                     "this looks more like delta_joint_position than absolute_joint_position."
                 )
+
+        for counterfactual_task, cf_safe in counterfactual_results:
+            print("counterfactual:", counterfactual_task)
+            print("  cf_action   :", np.round(cf_safe.policy_action, 3))
+            print("  cf_raw_delta:", np.round(cf_safe.raw_delta, 3))
+            print("  cf_target   :", np.round(cf_safe.target, 3))
 
         if args.execute:
             env.step(safe.target)
