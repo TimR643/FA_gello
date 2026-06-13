@@ -16,9 +16,11 @@ So at runtime by default:
 
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -29,8 +31,8 @@ from gello.env import RobotEnv
 from gello.lerobot.real_robot import (
     LeRobotObservationAdapter,
     SafeJointActionExecutor,
+    PolicyBundle,
     SafetyConfig,
-    load_lerobot_policy,
 )
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
@@ -84,6 +86,119 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     return clients
 
 
+def _metadata_mapping(dataset_meta: Any, name: str) -> Any:
+    value = getattr(dataset_meta, name, None)
+    if value is None and isinstance(dataset_meta, Mapping):
+        value = dataset_meta.get(name)
+    return value
+
+
+def _copy_meta_with_updates(dataset_meta: Any, features: Any, stats: Any) -> Any:
+    try:
+        patched = copy.copy(dataset_meta)
+        setattr(patched, "features", features)
+        if stats is not None:
+            setattr(patched, "stats", stats)
+        return patched
+    except Exception:
+        attrs = dict(getattr(dataset_meta, "__dict__", {}))
+        attrs["features"] = features
+        if stats is not None:
+            attrs["stats"] = stats
+        return SimpleNamespace(**attrs)
+
+
+def _make_smolvla_dataset_meta(
+    dataset_meta: Any, cameras: Tuple[str, ...], smolvla_image_keys: Tuple[str, ...]
+) -> Any:
+    """Patch dataset metadata to match runtime SmolVLA camera renaming.
+
+    Training commonly uses LeRobot's ``--rename_map`` to expose dataset cameras
+    such as ``wrist`` and ``base`` as SmolVLA keys such as ``camera1`` and
+    ``camera2``.  At deployment time this script performs the same renaming on
+    live batches; this helper mirrors it for the dataset metadata passed to
+    ``make_policy`` so LeRobot's policy/dataset feature validation sees the
+    trained feature names.
+    """
+
+    features = _metadata_mapping(dataset_meta, "features")
+    if features is None:
+        return dataset_meta
+
+    patched_features = copy.deepcopy(dict(features))
+    feature_source = None
+
+    for camera, smolvla_key in zip(cameras, smolvla_image_keys):
+        source_key = f"observation.images.{camera}"
+        target_key = f"observation.images.{smolvla_key}"
+        if source_key in patched_features:
+            source_feature = copy.deepcopy(patched_features.pop(source_key))
+            patched_features[target_key] = source_feature
+            feature_source = copy.deepcopy(source_feature)
+        elif target_key in patched_features:
+            feature_source = copy.deepcopy(patched_features[target_key])
+
+    if feature_source is None:
+        for key, value in patched_features.items():
+            if key.startswith("observation.images."):
+                feature_source = copy.deepcopy(value)
+                break
+
+    if feature_source is not None:
+        for smolvla_key in smolvla_image_keys:
+            target_key = f"observation.images.{smolvla_key}"
+            patched_features.setdefault(target_key, copy.deepcopy(feature_source))
+
+    stats = _metadata_mapping(dataset_meta, "stats")
+    patched_stats = None
+    if stats is not None:
+        patched_stats = copy.deepcopy(dict(stats))
+        stat_source = None
+        for camera, smolvla_key in zip(cameras, smolvla_image_keys):
+            source_key = f"observation.images.{camera}"
+            target_key = f"observation.images.{smolvla_key}"
+            if source_key in patched_stats:
+                source_stat = copy.deepcopy(patched_stats.pop(source_key))
+                patched_stats[target_key] = source_stat
+                stat_source = copy.deepcopy(source_stat)
+            elif target_key in patched_stats:
+                stat_source = copy.deepcopy(patched_stats[target_key])
+
+        if stat_source is not None:
+            for smolvla_key in smolvla_image_keys:
+                target_key = f"observation.images.{smolvla_key}"
+                patched_stats.setdefault(target_key, copy.deepcopy(stat_source))
+
+    return _copy_meta_with_updates(dataset_meta, patched_features, patched_stats)
+
+
+def _load_smolvla_policy(
+    *,
+    checkpoint: str,
+    dataset_root: str,
+    repo_id: str,
+    cameras: Tuple[str, ...],
+    smolvla_image_keys: Tuple[str, ...],
+    device: Optional[str] = None,
+) -> PolicyBundle:
+    import torch
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import make_policy
+
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
+    cfg = PreTrainedConfig.from_pretrained(checkpoint)
+    cfg.device = resolved_device
+    policy_meta = _make_smolvla_dataset_meta(
+        dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_image_keys
+    )
+    policy = make_policy(cfg=cfg, ds_meta=policy_meta)
+    policy.to(resolved_device)
+    policy.eval()
+    return PolicyBundle(policy=policy, dataset=dataset, device=resolved_device)
+
+
 def _prepare_smolvla_batch(
     batch: dict, task: str, smolvla_image_keys: Tuple[str, ...]
 ) -> dict:
@@ -126,10 +241,12 @@ def _prepare_smolvla_batch(
 
 
 def main(args: Args) -> None:
-    bundle = load_lerobot_policy(
+    bundle = _load_smolvla_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
+        cameras=args.cameras,
+        smolvla_image_keys=args.smolvla_image_keys,
         device=args.device,
     )
 
