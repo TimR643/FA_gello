@@ -75,6 +75,7 @@ class Args:
     debug_image_dir: Optional[str] = None
     debug_save_image_every_n_steps: int = 20
     debug_counterfactual_tasks: Tuple[str, ...] = ()
+    reset_policy_every_step: bool = False
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -257,6 +258,13 @@ def _prepare_smolvla_batch(
 
 
 
+
+def _reset_policy(policy: Any) -> None:
+    """Reset policy-side action queues/state when the policy supports it."""
+
+    if hasattr(policy, "reset"):
+        policy.reset()
+
 def _write_rgb_ppm(path: Path, image: np.ndarray) -> None:
     """Write an RGB image as binary PPM without extra image dependencies."""
 
@@ -331,6 +339,7 @@ def main(args: Args) -> None:
     print("debug_image_dir:", args.debug_image_dir)
     print("debug_save_image_every_n_steps:", args.debug_save_image_every_n_steps)
     print("debug_counterfactual_tasks:", args.debug_counterfactual_tasks)
+    print("reset_policy_every_step:", args.reset_policy_every_step)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -355,6 +364,7 @@ def main(args: Args) -> None:
         raise ValueError("duration * hz must produce at least one step.")
 
     dt = 1.0 / args.hz
+    _reset_policy(bundle.policy)
 
     for step in range(steps):
         started = time.time()
@@ -362,6 +372,9 @@ def main(args: Args) -> None:
         obs = env.get_obs()
         batch = adapter.make_batch(obs)
         state = adapter.state_from_obs(obs)
+
+        if args.reset_policy_every_step:
+            _reset_policy(bundle.policy)
 
         with torch.no_grad():
             batch = _prepare_smolvla_batch(
@@ -378,6 +391,7 @@ def main(args: Args) -> None:
         if args.debug_counterfactual_tasks:
             with torch.no_grad():
                 for counterfactual_task in args.debug_counterfactual_tasks:
+                    _reset_policy(bundle.policy)
                     cf_batch = adapter.make_batch(obs)
                     cf_batch = _prepare_smolvla_batch(
                         cf_batch,
@@ -390,6 +404,7 @@ def main(args: Args) -> None:
                     cf_action = postprocess(cf_action)
                     cf_safe = executor.make_safe_target(cf_action, state)
                     counterfactual_results.append((counterfactual_task, cf_safe))
+                _reset_policy(bundle.policy)
 
         print(f"\nStep {step + 1}/{steps}")
         print("state         :", np.round(state, 3))
