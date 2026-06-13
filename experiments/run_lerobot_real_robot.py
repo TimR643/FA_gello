@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Mapping, Optional, Tuple
@@ -69,6 +70,9 @@ class Args:
     action_mode: str = "absolute_joint_position"
     print_action_state_diagnostics: bool = True
     print_camera_color_diagnostics: bool = False
+    camera_color_margin: float = 25.0
+    debug_image_dir: Optional[str] = None
+    debug_save_image_every_n_steps: int = 20
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -250,6 +254,19 @@ def _prepare_smolvla_batch(
     return batch
 
 
+
+def _write_rgb_ppm(path: Path, image: np.ndarray) -> None:
+    """Write an RGB image as binary PPM without extra image dependencies."""
+
+    img = np.asarray(image, dtype=np.uint8)
+    if img.ndim != 3 or img.shape[2] != 3:
+        raise ValueError(f"Expected HxWx3 RGB image, got shape {img.shape}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = f"P6\n{img.shape[1]} {img.shape[0]}\n255\n".encode("ascii")
+    with path.open("wb") as handle:
+        handle.write(header)
+        handle.write(np.ascontiguousarray(img).tobytes())
+
 def main(args: Args) -> None:
     bundle = _load_smolvla_policy(
         checkpoint=args.checkpoint,
@@ -307,6 +324,9 @@ def main(args: Args) -> None:
     print("max_gripper_delta:", args.max_gripper_delta)
     print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
+    print("camera_color_margin:", args.camera_color_margin)
+    print("debug_image_dir:", args.debug_image_dir)
+    print("debug_save_image_every_n_steps:", args.debug_save_image_every_n_steps)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -359,13 +379,29 @@ def main(args: Args) -> None:
         print("target        :", np.round(safe.target, 3))
         if args.print_camera_color_diagnostics:
             for camera in args.cameras:
-                summary = summarize_rgb_image(obs[f"{camera}_rgb"])
+                summary = summarize_rgb_image(
+                    obs[f"{camera}_rgb"], dominance_margin=args.camera_color_margin
+                )
                 print(
                     f"camera {camera:>5s} : "
                     f"rgb_mean=({summary.red_mean:.1f}, "
                     f"{summary.green_mean:.1f}, {summary.blue_mean:.1f}) "
                     f"red_dom={summary.red_dominance:.1f} "
-                    f"green_dom={summary.green_dominance:.1f}"
+                    f"green_dom={summary.green_dominance:.1f} "
+                    f"red_px={100.0 * summary.red_fraction:.2f}% "
+                    f"green_px={100.0 * summary.green_fraction:.2f}%"
+                )
+
+        if (
+            args.debug_image_dir
+            and args.debug_save_image_every_n_steps > 0
+            and step % args.debug_save_image_every_n_steps == 0
+        ):
+            debug_dir = Path(args.debug_image_dir)
+            for camera in args.cameras:
+                _write_rgb_ppm(
+                    debug_dir / f"step_{step + 1:04d}_{camera}.ppm",
+                    obs[f"{camera}_rgb"],
                 )
         if args.print_action_state_diagnostics:
             print("abs_delta_l2  :", round(diagnostics.absolute_delta_l2, 3))

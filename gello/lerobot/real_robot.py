@@ -93,14 +93,18 @@ class RgbChannelSummary:
     blue_mean: float
     red_dominance: float
     green_dominance: float
+    red_fraction: float
+    green_fraction: float
 
 
-def summarize_rgb_image(image: Any) -> RgbChannelSummary:
+def summarize_rgb_image(image: Any, *, dominance_margin: float = 25.0) -> RgbChannelSummary:
     """Summarize an HxWx3 RGB image without changing policy inputs.
 
     Positive ``red_dominance`` means the red channel is stronger than both other
     channels on average; positive ``green_dominance`` means the same for green.
-    This is a lightweight sanity check for RGB/BGR mistakes and camera routing.
+    ``red_fraction`` and ``green_fraction`` count pixels where that channel is
+    stronger than both others by at least ``dominance_margin``. This catches
+    localized blocks better than image-wide means.
     """
 
     img = np.asarray(image)
@@ -109,12 +113,19 @@ def summarize_rgb_image(image: Any) -> RgbChannelSummary:
     img = img.astype(np.float32)
     means = img.reshape(-1, 3).mean(axis=0)
     red_mean, green_mean, blue_mean = (float(value) for value in means)
+    red = img[:, :, 0]
+    green = img[:, :, 1]
+    blue = img[:, :, 2]
+    red_mask = (red > green + dominance_margin) & (red > blue + dominance_margin)
+    green_mask = (green > red + dominance_margin) & (green > blue + dominance_margin)
     return RgbChannelSummary(
         red_mean=red_mean,
         green_mean=green_mean,
         blue_mean=blue_mean,
         red_dominance=red_mean - max(green_mean, blue_mean),
         green_dominance=green_mean - max(red_mean, blue_mean),
+        red_fraction=float(red_mask.mean()),
+        green_fraction=float(green_mask.mean()),
     )
 
 
