@@ -33,6 +33,7 @@ from gello.lerobot.real_robot import (
     SafeJointActionExecutor,
     PolicyBundle,
     SafetyConfig,
+    diagnose_action_state_interpretation,
 )
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
@@ -65,6 +66,7 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    print_action_state_diagnostics: bool = True
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -295,6 +297,7 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("task:", args.task)
 
     print("\nRuntime image mapping:")
@@ -335,6 +338,7 @@ def main(args: Args) -> None:
             policy_action = postprocess(policy_action)
 
         safe = executor.make_safe_target(policy_action, state)
+        diagnostics = diagnose_action_state_interpretation(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
         print("state         :", np.round(state, 3))
@@ -342,6 +346,15 @@ def main(args: Args) -> None:
         print("raw_delta     :", np.round(safe.raw_delta, 3))
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
+        if args.print_action_state_diagnostics:
+            print("abs_delta_l2  :", round(diagnostics.absolute_delta_l2, 3))
+            print("action_l2     :", round(diagnostics.action_l2, 3))
+            print("delta_target  :", np.round(diagnostics.delta_target, 3))
+            if diagnostics.likely_delta_action and args.action_mode == "absolute_joint_position":
+                print(
+                    "WARNING      : policy output is small while absolute delta is large; "
+                    "this looks more like delta_joint_position than absolute_joint_position."
+                )
 
         if args.execute:
             env.step(safe.target)
