@@ -31,7 +31,7 @@ Useful overrides:
 ```bash
 CKPT=/path/to/pretrained_model \
 ROBOT_HOST=127.0.0.1 \
-CAMERA_NAMES="('wrist','base')" \
+CAMERA_NAMES="wrist,base" \
 DURATION=30 \
 MAX_JOINT_DELTA=0.01 \
 ./start_lerobot_native_real_policy.sh
@@ -41,7 +41,7 @@ The script installs both this repository and `lerobot_robot_gello` in editable
 mode, then calls `lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
 Use `CAMERA_NAMES`, not `--robot.cameras`: LeRobot's base `RobotConfig` already
 uses `cameras` for its own camera-config dictionary, so the GELLO plugin keeps
-the simple wrist/base selection in `camera_names`.
+the simple wrist/base selection in `camera_names` as a comma-separated string such as `wrist,base`.
 
 ## Safety defaults
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import ast
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -41,7 +42,7 @@ class GelloZMQ(Robot):
     @property
     def observation_features(self) -> dict[str, Any]:
         features: dict[str, Any] = {self.config.state_key: (self.config.num_dofs,)}
-        for camera in self.config.camera_names:
+        for camera in self._camera_names():
             features[f"observation.images.{camera}"] = (
                 self.config.image_height,
                 self.config.image_width,
@@ -52,6 +53,23 @@ class GelloZMQ(Robot):
     @property
     def action_features(self) -> dict[str, Any]:
         return {self.config.action_key: (self.config.num_dofs,)}
+
+    def _camera_names(self) -> tuple[str, ...]:
+        camera_names = self.config.camera_names
+        if isinstance(camera_names, str):
+            text = camera_names.strip()
+            if not text:
+                return ()
+            if text.startswith(("(", "[")):
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, str):
+                    return (parsed,)
+                if isinstance(parsed, Sequence):
+                    return tuple(str(camera).strip() for camera in parsed)
+            return tuple(camera.strip() for camera in text.split(",") if camera.strip())
+        if isinstance(camera_names, Sequence):
+            return tuple(str(camera).strip() for camera in camera_names)
+        raise TypeError(f"Unsupported camera_names value: {camera_names!r}")
 
     @property
     def is_connected(self) -> bool:
@@ -66,7 +84,7 @@ class GelloZMQ(Robot):
             port=self.config.robot_port, host=self.config.robot_host
         )
         camera_host = self.config.camera_host or self.config.robot_host
-        for camera in self.config.camera_names:
+        for camera in self._camera_names():
             if camera == "wrist":
                 self.cameras[camera] = ZMQClientCamera(
                     port=self.config.wrist_camera_port, host=camera_host

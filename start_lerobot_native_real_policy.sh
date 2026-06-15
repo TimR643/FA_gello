@@ -47,7 +47,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.camera_host="${CAMERA_HOST:-${ROBOT_HOST:-127.0.0.1}}" \
     --robot.wrist_camera_port="${WRIST_CAMERA_PORT:-5000}" \
     --robot.base_camera_port="${BASE_CAMERA_PORT:-5001}" \
-    --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-('wrist','base')}}" \
+    --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-wrist,base}}" \
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
