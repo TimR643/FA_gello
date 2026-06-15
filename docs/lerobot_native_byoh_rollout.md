@@ -173,7 +173,7 @@ advertises the same visual feature name that the ACT policy expects:
 ```
 
 The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
-`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, conservative ACT
-smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.  Override those
-environment variables before the command if a different ACT checkpoint expects a
+`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=8`,
+conservative ACT smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.
+Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
