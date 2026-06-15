@@ -47,6 +47,7 @@ class Args:
     cameras: Tuple[str, ...] = ("wrist",)
     policy_kind: str = "auto"
     smolvla_image_keys: Tuple[str, ...] = ("camera1", "camera2", "camera3")
+    smolvla_empty_camera_keys: Tuple[str, ...] = ("empty_camera_0", "empty_camera_1")
 
     duration: float = 10.0
     hz: float = 2.0
@@ -216,6 +217,8 @@ def _load_policy(
     repo_id: str,
     cameras: Tuple[str, ...],
     smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...],
+    force_smolvla_mapping: bool = False,
     device: Optional[str] = None,
 ) -> PolicyBundle:
     import torch
@@ -228,10 +231,11 @@ def _load_policy(
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
     policy_type = _policy_type_name(cfg)
-    use_smolvla_mapping = policy_type == "smolvla"
+    use_smolvla_mapping = force_smolvla_mapping or policy_type == "smolvla"
+    smolvla_feature_keys = smolvla_image_keys + smolvla_empty_camera_keys
     policy_meta = (
         _make_smolvla_dataset_meta(
-            dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_image_keys
+            dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_feature_keys
         )
         if use_smolvla_mapping
         else dataset.meta
@@ -247,6 +251,7 @@ def _prepare_smolvla_batch(
     task: str,
     cameras: Tuple[str, ...],
     smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...] = (),
 ) -> dict:
     """Prepare live GELLO/LeRobot batch for SmolVLA inference.
 
@@ -281,7 +286,7 @@ def _prepare_smolvla_batch(
         if live_key != target_key:
             batch.pop(live_key, None)
 
-    for smolvla_key in smolvla_image_keys:
+    for smolvla_key in smolvla_image_keys + smolvla_empty_camera_keys:
         target_key = f"observation.images.{smolvla_key}"
         if target_key not in batch:
             batch[target_key] = torch.zeros_like(first_image)
@@ -316,6 +321,8 @@ def main(args: Args) -> None:
         repo_id=args.repo_id,
         cameras=args.cameras,
         smolvla_image_keys=args.smolvla_image_keys,
+        smolvla_empty_camera_keys=args.smolvla_empty_camera_keys,
+        force_smolvla_mapping=args.policy_kind == "smolvla",
         device=args.device,
     )
 
@@ -368,6 +375,7 @@ def main(args: Args) -> None:
     print("policy_type:", policy_type)
     print("policy_kind:", effective_policy_kind)
     print("SmolVLA image keys:", args.smolvla_image_keys)
+    print("SmolVLA empty camera keys:", args.smolvla_empty_camera_keys)
     print("execute:", args.execute)
     print("duration:", args.duration)
     print("hz:", args.hz)
@@ -390,9 +398,12 @@ def main(args: Args) -> None:
         print("\nRuntime image mapping:")
         for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
             print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
-        if len(args.smolvla_image_keys) > len(args.cameras):
-            for smolvla_key in args.smolvla_image_keys[len(args.cameras):]:
-                print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
+        zero_smolvla_keys = (
+            args.smolvla_image_keys[len(args.cameras):]
+            + args.smolvla_empty_camera_keys
+        )
+        for smolvla_key in zero_smolvla_keys:
+            print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
     else:
         print("\nRuntime image mapping: using dataset camera names directly")
 
@@ -434,7 +445,11 @@ def main(args: Args) -> None:
         with torch.no_grad():
             if use_smolvla_runtime:
                 batch = _prepare_smolvla_batch(
-                    batch, args.task, args.cameras, args.smolvla_image_keys
+                    batch,
+                    args.task,
+                    args.cameras,
+                    args.smolvla_image_keys,
+                    args.smolvla_empty_camera_keys,
                 )
                 batch = preprocess(batch)
 
@@ -459,6 +474,7 @@ def main(args: Args) -> None:
                             counterfactual_task,
                             args.cameras,
                             args.smolvla_image_keys,
+                            args.smolvla_empty_camera_keys,
                         )
                         cf_batch = preprocess(cf_batch)
                     cf_action = bundle.policy.select_action(cf_batch)
