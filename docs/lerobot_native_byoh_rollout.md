@@ -121,3 +121,14 @@ The GELLO RealSense camera driver passes `img_size` to OpenCV as `(width, height
 The LeRobot feature schema is still declared as image shape `(height, width, 3)`.
 Therefore the plugin requests `(image_width, image_height)` from ZMQ and validates
 that the returned RGB image is `(image_height, image_width, 3)`.
+
+
+## Policy-facing feature names
+
+LeRobot robot hardware features should be raw hardware names.  The rollout code
+turns camera feature keys such as `camera1` into dataset keys such as
+`observation.images.camera1`, and motor keys ending in `.pos` into
+`observation.state` / `action`.  For the SmolVLA two-camera checkpoint, the
+plugin maps live `wrist,base` cameras to policy-facing `camera1,camera2` and
+adds a black dummy `camera3` by default because the policy expects three visual
+features.

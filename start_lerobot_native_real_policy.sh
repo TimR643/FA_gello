@@ -49,6 +49,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.base_camera_port="${BASE_CAMERA_PORT:-5001}" \
     --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}" \
     --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-wrist,base}}" \
+    --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \

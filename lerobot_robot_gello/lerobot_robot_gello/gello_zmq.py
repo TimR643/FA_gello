@@ -42,9 +42,9 @@ class GelloZMQ(Robot):
 
     @property
     def observation_features(self) -> dict[str, Any]:
-        features: dict[str, Any] = {self.config.state_key: (self.config.num_dofs,)}
-        for camera in self._camera_names():
-            features[f"observation.images.{camera}"] = (
+        features: dict[str, Any] = self._joint_features()
+        for camera in self._policy_camera_names():
+            features[camera] = (
                 self.config.image_height,
                 self.config.image_width,
                 3,
@@ -53,10 +53,22 @@ class GelloZMQ(Robot):
 
     @property
     def action_features(self) -> dict[str, Any]:
-        return {self.config.action_key: (self.config.num_dofs,)}
+        return self._joint_features()
+
+    def _joint_features(self) -> dict[str, type]:
+        return {f"joint_{index}.pos": float for index in range(self.config.num_dofs)}
+
+    def _joint_feature_names(self) -> tuple[str, ...]:
+        return tuple(f"joint_{index}.pos" for index in range(self.config.num_dofs))
+
+    def _policy_camera_names(self) -> tuple[str, ...]:
+        return self._parse_names(self.config.policy_camera_names)
 
     def _camera_names(self) -> tuple[str, ...]:
-        camera_names = self.config.camera_names
+        return self._parse_names(self.config.camera_names)
+
+    @staticmethod
+    def _parse_names(camera_names: Any) -> tuple[str, ...]:
         if isinstance(camera_names, str):
             text = camera_names.strip()
             if not text:
@@ -148,18 +160,30 @@ class GelloZMQ(Robot):
                 f"Expected state shape {(self.config.num_dofs,)}, got {state.shape}"
             )
         self._last_state = state
-        obs: dict[str, Any] = {self.config.state_key: state}
-        for camera, client in self.cameras.items():
+        obs: dict[str, Any] = {
+            key: float(value) for key, value in zip(self._joint_feature_names(), state)
+        }
+        live_camera_names = self._camera_names()
+        policy_camera_names = self._policy_camera_names()
+        for policy_camera_index, policy_camera in enumerate(policy_camera_names):
+            if policy_camera_index >= len(live_camera_names):
+                obs[policy_camera] = np.zeros(
+                    (self.config.image_height, self.config.image_width, 3),
+                    dtype=np.uint8,
+                )
+                continue
+            live_camera = live_camera_names[policy_camera_index]
+            client = self.cameras[live_camera]
             rgb, _depth = client.read(
                 (self.config.image_width, self.config.image_height)
             )
             image = np.asarray(rgb)
             if image.shape != (self.config.image_height, self.config.image_width, 3):
                 raise ValueError(
-                    f"Camera {camera!r} returned {image.shape}; expected "
+                    f"Camera {live_camera!r} returned {image.shape}; expected "
                     f"{(self.config.image_height, self.config.image_width, 3)}"
                 )
-            obs[f"observation.images.{camera}"] = image
+            obs[policy_camera] = image
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
@@ -171,16 +195,23 @@ class GelloZMQ(Robot):
         raw_action = self._extract_action_array(action)
         safe = self.executor.make_safe_target(raw_action, current)
         self.robot.command_joint_state(safe.target)
-        return {self.config.action_key: safe.target}
+        return {
+            key: float(value)
+            for key, value in zip(self._joint_feature_names(), safe.target)
+        }
 
     def _extract_action_array(self, action: dict[str, Any] | Any) -> Any:
         if not isinstance(action, Mapping):
             return action
         if self.config.action_key in action:
             return action[self.config.action_key]
+        joint_keys = self._joint_feature_names()
+        if all(key in action for key in joint_keys):
+            return np.asarray([action[key] for key in joint_keys], dtype=np.float32)
         if len(action) == 1:
             return next(iter(action.values()))
         available = ", ".join(str(key) for key in action)
         raise KeyError(
-            f"Action is missing {self.config.action_key!r}; available keys: {available}"
+            f"Action is missing {self.config.action_key!r} or joint_*.pos keys; "
+            f"available keys: {available}"
         )
