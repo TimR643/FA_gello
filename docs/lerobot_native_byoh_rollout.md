@@ -94,3 +94,22 @@ ssh -N \
 
 Then, in a second shell on the HPC, run the LeRobot rollout with
 `ROBOT_HOST=127.0.0.1`. The reverse tunnel must stay open for the entire rollout.
+
+If the Franka laptop prints `connect_to 127.0.0.1 port 6001: failed` for the
+reverse tunnel, the HPC did reach the reverse-forwarded port, but the SSH client
+on the Franka laptop could not connect to the local target. In practice this
+means the local GELLO ZMQ servers are not listening yet, are listening on a
+different host/interface, or the ports differ. Run the tunnel script only after
+`start_gello_panda.sh` has brought up the robot/camera ZMQ tmux windows. You can
+check locally on the Franka laptop with:
+
+```bash
+ss -ltnp | grep -E ':(6001|5000|5001)'
+```
+
+If the servers are bound to the laptop LAN IP instead of loopback, keep the HPC
+rollout at `ROBOT_HOST=127.0.0.1` but start the reverse tunnel with e.g.:
+
+```bash
+LOCAL_ZMQ_HOST=<FRANKA_LAPTOP_IP> ./start_franka_to_hpc_reverse_tunnel.sh
+```
