@@ -54,6 +54,7 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    print_timing_diagnostics: bool = False
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -221,6 +222,15 @@ def _prepare_smolvla_batch(
     return batch
 
 
+def _command_robot_without_extra_observation(
+    robot: ZMQClientRobot, target: np.ndarray
+) -> None:
+    """Send a joint target without doing RobotEnv.step's extra post-command get_obs()."""
+
+    if len(target) != robot.num_dofs():
+        raise ValueError(f"target:{len(target)}, robot:{robot.num_dofs()}")
+    robot.command_joint_state(target)
+
 def main(args: Args) -> None:
     bundle = _load_lerobot_policy_with_patched_meta(
         checkpoint=args.checkpoint,
@@ -276,6 +286,7 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("print_timing_diagnostics:", args.print_timing_diagnostics)
     print("task:", args.task)
 
     print("\nRuntime mapping:")
@@ -306,10 +317,13 @@ def main(args: Args) -> None:
     for step in range(steps):
         started = time.time()
 
+        obs_started = time.time()
         obs = env.get_obs()
+        obs_elapsed = time.time() - obs_started
         batch = adapter.make_batch(obs)
         state = adapter.state_from_obs(obs)
 
+        policy_started = time.time()
         with torch.no_grad():
             batch = _prepare_smolvla_batch(
                 batch,
@@ -323,6 +337,7 @@ def main(args: Args) -> None:
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
 
+        policy_elapsed = time.time() - policy_started
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
@@ -332,10 +347,22 @@ def main(args: Args) -> None:
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
 
+        command_elapsed = 0.0
         if args.execute:
-            env.step(safe.target)
+            command_started = time.time()
+            _command_robot_without_extra_observation(robot, safe.target)
+            command_elapsed = time.time() - command_started
 
-        remaining = dt - (time.time() - started)
+        elapsed = time.time() - started
+        remaining = dt - elapsed
+        if args.print_timing_diagnostics:
+            print(
+                "timing       : "
+                f"obs={obs_elapsed:.3f}s policy={policy_elapsed:.3f}s "
+                f"command={command_elapsed:.3f}s total={elapsed:.3f}s "
+                f"sleep={max(0.0, remaining):.3f}s "
+                f"overrun={max(0.0, -remaining):.3f}s"
+            )
         if remaining > 0:
             time.sleep(remaining)
 
