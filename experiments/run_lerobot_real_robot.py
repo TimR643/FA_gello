@@ -97,6 +97,19 @@ def _print_realtime_safety_warnings(args: Args) -> None:
         )
 
 
+
+def _print_policy_queue_warnings(args: Args, *, use_smolvla_runtime: bool) -> None:
+    """Warn about debug options that can make chunked policies repeat first actions."""
+
+    if use_smolvla_runtime and args.execute and args.reset_policy_every_step:
+        print(
+            "WARNING: --reset-policy-every-step is a debugging option for "
+            "chunked policies. In execute mode it repeatedly discards the "
+            "policy action queue, so the robot may execute the first predicted "
+            "chunk action over and over instead of following the planned chunk. "
+            "Remove this flag for normal SmolVLA rollouts."
+        )
+
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     host = args.camera_host or args.robot_host
     clients: dict[str, ZMQClientCamera] = {}
@@ -383,6 +396,7 @@ def main(args: Args) -> None:
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
     _print_realtime_safety_warnings(args)
+    _print_policy_queue_warnings(args, use_smolvla_runtime=use_smolvla_runtime)
     print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
     print("camera_color_margin:", args.camera_color_margin)
