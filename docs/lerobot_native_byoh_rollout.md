@@ -132,3 +132,14 @@ turns camera feature keys such as `camera1` into dataset keys such as
 plugin maps live `wrist,base` cameras to policy-facing `camera1,camera2` and
 adds a black dummy `camera3` by default because the policy expects three visual
 features.
+
+
+## Smoothness knobs
+
+If the policy chooses the right behavior but the physical motion is still too
+jerky, reduce the per-step deltas first (`MAX_JOINT_DELTA`, `MAX_GRIPPER_DELTA`).
+For additional low-pass smoothing, set `COMMAND_SMOOTHING_ALPHA` below `1.0`.
+`1.0` preserves the raw clipped target, while values such as `0.3` or `0.5` blend
+the new safe target with the previous command before sending it to ZMQ. The
+smoothed command is clipped again against the same per-step safety limits before
+it reaches the robot.

@@ -52,6 +52,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}" \
+    --robot.command_smoothing_alpha="${COMMAND_SMOOTHING_ALPHA:-1.0}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
     --task="$TASK" \
     --duration="$DURATION"
