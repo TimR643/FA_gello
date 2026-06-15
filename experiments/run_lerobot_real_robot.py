@@ -1,17 +1,9 @@
-"""Safely run a trained LeRobot SmolVLA policy on the real GELLO/ZMQ robot stack.
+"""Safely run a trained LeRobot policy on the real GELLO/ZMQ robot stack.
 
 Default mode is a dry run: live observations are read and the policy is queried,
-but no command is sent to the robot unless ``--execute`` is passed.
-
-This version is adapted for a SmolVLA policy trained with:
-    observation.images.wrist -> observation.images.camera1
-and:
-    policy.empty_cameras=2
-
-So at runtime by default:
-    live wrist camera  -> observation.images.camera1
-    live base camera   -> observation.images.camera2 (when --cameras wrist base)
-    camera3            -> zero dummy image
+but no command is sent to the robot unless ``--execute`` is passed.  The script
+supports ACT policies with dataset camera names directly and SmolVLA policies
+with optional camera1/camera2/camera3 runtime remapping.
 """
 
 from __future__ import annotations
@@ -80,6 +72,28 @@ class Args:
     zero_live_cameras: Tuple[str, ...] = ()
 
     task: str = "Move right when the red block is visible, otherwise move left."
+
+
+def _per_step_delta_rate(delta: float, hz: float) -> float:
+    """Return the implied per-second joint/gripper delta at the control rate."""
+
+    return float(delta * hz)
+
+
+def _print_realtime_safety_warnings(args: Args) -> None:
+    """Print warnings for rollout limits that are likely to break realtime control."""
+
+    joint_rate = _per_step_delta_rate(args.max_joint_delta, args.hz)
+    gripper_rate = _per_step_delta_rate(args.max_gripper_delta, args.hz)
+    print("implied_max_joint_delta_per_second:", round(joint_rate, 4))
+    print("implied_max_gripper_delta_per_second:", round(gripper_rate, 4))
+    if args.execute and args.action_mode == "absolute_joint_position" and joint_rate > 0.25:
+        print(
+            "WARNING: max_joint_delta * hz is very high for realtime Franka "
+            "execution. Large absolute-target jumps can trigger realtime "
+            "breaks/reflex stops. Start near the training pose and reduce "
+            "--max-joint-delta, e.g. 0.005-0.02 at 10 Hz."
+        )
 
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
@@ -345,7 +359,7 @@ def main(args: Args) -> None:
         camera_dict=_make_camera_clients(args),
     )
 
-    print("\nLEROBOT SMOLVLA REAL-ROBOT ROLLOUT")
+    print(f"\nLEROBOT {effective_policy_kind.upper()} REAL-ROBOT ROLLOUT")
     print("checkpoint:", args.checkpoint)
     print("dataset_root:", args.dataset_root)
     print("repo_id:", args.repo_id)
@@ -360,6 +374,7 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    _print_realtime_safety_warnings(args)
     print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
     print("camera_color_margin:", args.camera_color_margin)
