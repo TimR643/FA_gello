@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
+import zmq
 from lerobot.robots.robot import Robot
 
 from gello.lerobot.real_robot import SafeJointActionExecutor, SafetyConfig
@@ -83,19 +84,44 @@ class GelloZMQ(Robot):
         self.robot = ZMQClientRobot(
             port=self.config.robot_port, host=self.config.robot_host
         )
+        self._configure_zmq_timeout(self.robot, name="robot")
         camera_host = self.config.camera_host or self.config.robot_host
         for camera in self._camera_names():
             if camera == "wrist":
                 self.cameras[camera] = ZMQClientCamera(
                     port=self.config.wrist_camera_port, host=camera_host
                 )
+                self._configure_zmq_timeout(self.cameras[camera], name="wrist camera")
             elif camera == "base":
                 self.cameras[camera] = ZMQClientCamera(
                     port=self.config.base_camera_port, host=camera_host
                 )
+                self._configure_zmq_timeout(self.cameras[camera], name="base camera")
             else:
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
+        self._preflight_robot_connection()
         self._is_connected = True
+
+    def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
+        socket = getattr(client, "_socket", None)
+        if socket is None:
+            raise AttributeError(f"{name} client has no _socket attribute")
+        socket.setsockopt(zmq.RCVTIMEO, self.config.zmq_timeout_ms)
+        socket.setsockopt(zmq.SNDTIMEO, self.config.zmq_timeout_ms)
+        socket.setsockopt(zmq.LINGER, 0)
+
+    def _preflight_robot_connection(self) -> None:
+        if self.robot is None:
+            raise ConnectionError("Robot client was not created")
+        try:
+            self.robot.num_dofs()
+        except Exception as exc:
+            raise ConnectionError(
+                "Could not reach GELLO robot ZMQ server at "
+                f"{self.config.robot_host}:{self.config.robot_port} within "
+                f"{self.config.zmq_timeout_ms} ms. Check that the robot ZMQ node "
+                "is running and that the SSH tunnel forwards this port."
+            ) from exc
 
     def disconnect(self) -> None:
         if self.robot is not None:

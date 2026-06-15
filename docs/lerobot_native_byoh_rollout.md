@@ -34,6 +34,7 @@ ROBOT_HOST=127.0.0.1 \
 CAMERA_NAMES="wrist,base" \
 DURATION=30 \
 MAX_JOINT_DELTA=0.01 \
+ZMQ_TIMEOUT_MS=3000 \
 ./start_lerobot_native_real_policy.sh
 ```
 
@@ -56,3 +57,12 @@ ZMQ:
 If the old custom rollout loop was causing the chaotic behavior, this native path
 removes that loop from the critical path while preserving conservative hardware
 clipping.
+
+
+## ZMQ/SSH tunnel check
+
+`Robot connected: gello_zmq` only means the local ZMQ client object was created.
+The plugin now performs a preflight `num_dofs()` request with `ZMQ_TIMEOUT_MS` so
+missing SSH tunnels or stopped ZMQ servers fail quickly instead of hanging on the
+first observation. If this fails, verify that the robot laptop forwards port 6001
+and the camera ports 5000/5001 to the machine running `lerobot-rollout`.
