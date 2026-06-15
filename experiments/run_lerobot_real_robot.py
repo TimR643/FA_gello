@@ -1,17 +1,9 @@
-"""Safely run a trained LeRobot SmolVLA policy on the real GELLO/ZMQ robot stack.
+"""Safely run a trained LeRobot policy on the real GELLO/ZMQ robot stack.
 
 Default mode is a dry run: live observations are read and the policy is queried,
-but no command is sent to the robot unless ``--execute`` is passed.
-
-This version is adapted for a SmolVLA policy trained with:
-    observation.images.wrist -> observation.images.camera1
-and:
-    policy.empty_cameras=2
-
-So at runtime by default:
-    live wrist camera  -> observation.images.camera1
-    live base camera   -> observation.images.camera2 (when --cameras wrist base)
-    camera3            -> zero dummy image
+but no command is sent to the robot unless ``--execute`` is passed.  The script
+supports ACT policies with dataset camera names directly and SmolVLA policies
+with optional camera1/camera2/camera3 runtime remapping.
 """
 
 from __future__ import annotations
@@ -53,7 +45,9 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     cameras: Tuple[str, ...] = ("wrist",)
+    policy_kind: str = "auto"
     smolvla_image_keys: Tuple[str, ...] = ("camera1", "camera2", "camera3")
+    smolvla_empty_camera_keys: Tuple[str, ...] = ("empty_camera_0", "empty_camera_1")
 
     duration: float = 10.0
     hz: float = 2.0
@@ -68,6 +62,7 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    print_timing_diagnostics: bool = False
     print_action_state_diagnostics: bool = True
     print_camera_color_diagnostics: bool = False
     camera_color_margin: float = 25.0
@@ -80,6 +75,41 @@ class Args:
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
+
+def _per_step_delta_rate(delta: float, hz: float) -> float:
+    """Return the implied per-second joint/gripper delta at the control rate."""
+
+    return float(delta * hz)
+
+
+def _print_realtime_safety_warnings(args: Args) -> None:
+    """Print warnings for rollout limits that are likely to break realtime control."""
+
+    joint_rate = _per_step_delta_rate(args.max_joint_delta, args.hz)
+    gripper_rate = _per_step_delta_rate(args.max_gripper_delta, args.hz)
+    print("implied_max_joint_delta_per_second:", round(joint_rate, 4))
+    print("implied_max_gripper_delta_per_second:", round(gripper_rate, 4))
+    if args.execute and args.action_mode == "absolute_joint_position" and joint_rate > 0.25:
+        print(
+            "WARNING: max_joint_delta * hz is very high for realtime Franka "
+            "execution. Large absolute-target jumps can trigger realtime "
+            "breaks/reflex stops. Start near the training pose and reduce "
+            "--max-joint-delta, e.g. 0.005-0.02 at 10 Hz."
+        )
+
+
+
+def _print_policy_queue_warnings(args: Args, *, use_smolvla_runtime: bool) -> None:
+    """Warn about debug options that can make chunked policies repeat first actions."""
+
+    if use_smolvla_runtime and args.execute and args.reset_policy_every_step:
+        print(
+            "WARNING: --reset-policy-every-step is a debugging option for "
+            "chunked policies. In execute mode it repeatedly discards the "
+            "policy action queue, so the robot may execute the first predicted "
+            "chunk action over and over instead of following the planned chunk. "
+            "Remove this flag for normal SmolVLA rollouts."
+        )
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     host = args.camera_host or args.robot_host
@@ -184,13 +214,25 @@ def _make_smolvla_dataset_meta(
     return _copy_meta_with_updates(dataset_meta, patched_features, patched_stats)
 
 
-def _load_smolvla_policy(
+def _policy_type_name(cfg: Any) -> str:
+    """Return a lowercase LeRobot policy type/name from config metadata."""
+
+    for attr in ("type", "policy_type", "name"):
+        value = getattr(cfg, attr, None)
+        if value:
+            return str(value).lower()
+    return cfg.__class__.__name__.lower()
+
+
+def _load_policy(
     *,
     checkpoint: str,
     dataset_root: str,
     repo_id: str,
     cameras: Tuple[str, ...],
     smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...],
+    force_smolvla_mapping: bool = False,
     device: Optional[str] = None,
 ) -> PolicyBundle:
     import torch
@@ -202,8 +244,15 @@ def _load_smolvla_policy(
     dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
-    policy_meta = _make_smolvla_dataset_meta(
-        dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_image_keys
+    policy_type = _policy_type_name(cfg)
+    use_smolvla_mapping = force_smolvla_mapping or policy_type == "smolvla"
+    smolvla_feature_keys = smolvla_image_keys + smolvla_empty_camera_keys
+    policy_meta = (
+        _make_smolvla_dataset_meta(
+            dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_feature_keys
+        )
+        if use_smolvla_mapping
+        else dataset.meta
     )
     policy = make_policy(cfg=cfg, ds_meta=policy_meta)
     policy.to(resolved_device)
@@ -216,6 +265,7 @@ def _prepare_smolvla_batch(
     task: str,
     cameras: Tuple[str, ...],
     smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...] = (),
 ) -> dict:
     """Prepare live GELLO/LeRobot batch for SmolVLA inference.
 
@@ -250,7 +300,7 @@ def _prepare_smolvla_batch(
         if live_key != target_key:
             batch.pop(live_key, None)
 
-    for smolvla_key in smolvla_image_keys:
+    for smolvla_key in smolvla_image_keys + smolvla_empty_camera_keys:
         target_key = f"observation.images.{smolvla_key}"
         if target_key not in batch:
             batch[target_key] = torch.zeros_like(first_image)
@@ -278,21 +328,40 @@ def _write_rgb_ppm(path: Path, image: np.ndarray) -> None:
         handle.write(header)
         handle.write(np.ascontiguousarray(img).tobytes())
 
+def _command_robot_without_extra_observation(
+    robot: ZMQClientRobot, target: np.ndarray
+) -> None:
+    """Send a joint target without doing RobotEnv.step's extra post-command get_obs()."""
+
+    if len(target) != robot.num_dofs():
+        raise ValueError(f"target:{len(target)}, robot:{robot.num_dofs()}")
+    robot.command_joint_state(target)
+
 def main(args: Args) -> None:
-    bundle = _load_smolvla_policy(
+    bundle = _load_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         cameras=args.cameras,
         smolvla_image_keys=args.smolvla_image_keys,
+        smolvla_empty_camera_keys=args.smolvla_empty_camera_keys,
+        force_smolvla_mapping=args.policy_kind == "smolvla",
         device=args.device,
     )
 
-    preprocess, postprocess = make_pre_post_processors(
-        bundle.policy.config,
-        args.checkpoint,
-        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
-    )
+    policy_type = _policy_type_name(bundle.policy.config)
+    if args.policy_kind not in {"auto", "act", "smolvla"}:
+        raise ValueError("policy_kind must be one of: auto, act, smolvla")
+    effective_policy_kind = policy_type if args.policy_kind == "auto" else args.policy_kind
+    use_smolvla_runtime = effective_policy_kind == "smolvla"
+
+    preprocess = postprocess = None
+    if use_smolvla_runtime:
+        preprocess, postprocess = make_pre_post_processors(
+            bundle.policy.config,
+            args.checkpoint,
+            preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
+        )
 
     adapter = LeRobotObservationAdapter(
         device=bundle.device,
@@ -320,19 +389,25 @@ def main(args: Args) -> None:
         camera_dict=_make_camera_clients(args),
     )
 
-    print("\nLEROBOT SMOLVLA REAL-ROBOT ROLLOUT")
+    print(f"\nLEROBOT {effective_policy_kind.upper()} REAL-ROBOT ROLLOUT")
     print("checkpoint:", args.checkpoint)
     print("dataset_root:", args.dataset_root)
     print("repo_id:", args.repo_id)
     print("device:", bundle.device)
     print("live cameras:", args.cameras)
+    print("policy_type:", policy_type)
+    print("policy_kind:", effective_policy_kind)
     print("SmolVLA image keys:", args.smolvla_image_keys)
+    print("SmolVLA empty camera keys:", args.smolvla_empty_camera_keys)
     print("execute:", args.execute)
     print("duration:", args.duration)
     print("hz:", args.hz)
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("print_timing_diagnostics:", args.print_timing_diagnostics)
+    _print_realtime_safety_warnings(args)
+    _print_policy_queue_warnings(args, use_smolvla_runtime=use_smolvla_runtime)
     print("print_action_state_diagnostics:", args.print_action_state_diagnostics)
     print("print_camera_color_diagnostics:", args.print_camera_color_diagnostics)
     print("camera_color_margin:", args.camera_color_margin)
@@ -344,12 +419,18 @@ def main(args: Args) -> None:
     print("zero_live_cameras:", args.zero_live_cameras)
     print("task:", args.task)
 
-    print("\nRuntime image mapping:")
-    for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
-        print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
-    if len(args.smolvla_image_keys) > len(args.cameras):
-        for smolvla_key in args.smolvla_image_keys[len(args.cameras):]:
+    if use_smolvla_runtime:
+        print("\nRuntime image mapping:")
+        for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
+            print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
+        zero_smolvla_keys = (
+            args.smolvla_image_keys[len(args.cameras):]
+            + args.smolvla_empty_camera_keys
+        )
+        for smolvla_key in zero_smolvla_keys:
             print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
+    else:
+        print("\nRuntime image mapping: using dataset camera names directly")
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but the robot will not move.")
@@ -371,7 +452,9 @@ def main(args: Args) -> None:
     for step in range(steps):
         started = time.time()
 
+        obs_started = time.time()
         obs = env.get_obs()
+        obs_elapsed = time.time() - obs_started
         batch = adapter.make_batch(obs)
         for camera in args.zero_live_cameras:
             key = f"observation.images.{camera}"
@@ -386,15 +469,23 @@ def main(args: Args) -> None:
         if args.reset_policy_every_step:
             _reset_policy(bundle.policy)
 
+        policy_started = time.time()
         with torch.no_grad():
-            batch = _prepare_smolvla_batch(
-                batch, args.task, args.cameras, args.smolvla_image_keys
-            )
-            batch = preprocess(batch)
+            if use_smolvla_runtime:
+                batch = _prepare_smolvla_batch(
+                    batch,
+                    args.task,
+                    args.cameras,
+                    args.smolvla_image_keys,
+                    args.smolvla_empty_camera_keys,
+                )
+                batch = preprocess(batch)
 
             policy_action = bundle.policy.select_action(batch)
-            policy_action = postprocess(policy_action)
+            if use_smolvla_runtime:
+                policy_action = postprocess(policy_action)
 
+        policy_elapsed = time.time() - policy_started
         safe = executor.make_safe_target(policy_action, state)
         diagnostics = diagnose_action_state_interpretation(policy_action, state)
         counterfactual_results = []
@@ -406,15 +497,18 @@ def main(args: Args) -> None:
                     for camera in args.zero_live_cameras:
                         key = f"observation.images.{camera}"
                         cf_batch[key] = torch.zeros_like(cf_batch[key])
-                    cf_batch = _prepare_smolvla_batch(
-                        cf_batch,
-                        counterfactual_task,
-                        args.cameras,
-                        args.smolvla_image_keys,
-                    )
-                    cf_batch = preprocess(cf_batch)
+                    if use_smolvla_runtime:
+                        cf_batch = _prepare_smolvla_batch(
+                            cf_batch,
+                            counterfactual_task,
+                            args.cameras,
+                            args.smolvla_image_keys,
+                            args.smolvla_empty_camera_keys,
+                        )
+                        cf_batch = preprocess(cf_batch)
                     cf_action = bundle.policy.select_action(cf_batch)
-                    cf_action = postprocess(cf_action)
+                    if use_smolvla_runtime:
+                        cf_action = postprocess(cf_action)
                     cf_safe = executor.make_safe_target(cf_action, state)
                     counterfactual_results.append((counterfactual_task, cf_safe))
                 _reset_policy(bundle.policy)
@@ -478,10 +572,22 @@ def main(args: Args) -> None:
             print("  cf_raw_delta:", np.round(cf_safe.raw_delta, 3))
             print("  cf_target   :", np.round(cf_safe.target, 3))
 
+        command_elapsed = 0.0
         if args.execute:
-            env.step(safe.target)
+            command_started = time.time()
+            _command_robot_without_extra_observation(robot, safe.target)
+            command_elapsed = time.time() - command_started
 
-        remaining = dt - (time.time() - started)
+        elapsed = time.time() - started
+        remaining = dt - elapsed
+        if args.print_timing_diagnostics:
+            print(
+                "timing       : "
+                f"obs={obs_elapsed:.3f}s policy={policy_elapsed:.3f}s "
+                f"command={command_elapsed:.3f}s total={elapsed:.3f}s "
+                f"sleep={max(0.0, remaining):.3f}s "
+                f"overrun={max(0.0, -remaining):.3f}s"
+            )
         if remaining > 0:
             time.sleep(remaining)
 

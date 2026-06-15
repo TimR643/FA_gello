@@ -38,6 +38,8 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     cameras: Tuple[str, ...] = ("wrist",)
+    smolvla_image_keys: Tuple[str, ...] = ("camera1", "camera2", "camera3")
+    smolvla_empty_camera_keys: Tuple[str, ...] = ("empty_camera_0", "empty_camera_1")
 
     duration: float = 10.0
     hz: float = 2.0
@@ -52,6 +54,7 @@ class Args:
     max_joint_delta: float = 0.005
     max_gripper_delta: float = 0.01
     action_mode: str = "absolute_joint_position"
+    print_timing_diagnostics: bool = False
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
@@ -109,7 +112,9 @@ def _copy_meta_with_features_and_stats(
         return SimpleNamespace(**attrs)
 
 
-def _make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
+def _make_smolvla_dataset_meta(
+    dataset_meta: Any, smolvla_feature_keys: Tuple[str, ...]
+) -> Any:
     """Patch dataset metadata so LeRobot make_policy accepts SmolVLA cameras."""
 
     features = getattr(dataset_meta, "features", None)
@@ -120,7 +125,8 @@ def _make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
 
     wrist_feature = copy.deepcopy(features["observation.images.wrist"])
     feature_updates = {
-        key: copy.deepcopy(wrist_feature) for key in SMOLVLA_IMAGE_FEATURES
+        f"observation.images.{key}": copy.deepcopy(wrist_feature)
+        for key in smolvla_feature_keys
     }
     patched_features = _copy_mapping_with_updates(
         features, feature_updates, remove=("observation.images.wrist",)
@@ -136,7 +142,8 @@ def _make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
         if "observation.images.wrist" in stats:
             wrist_stats = copy.deepcopy(stats["observation.images.wrist"])
             stat_updates = {
-                key: copy.deepcopy(wrist_stats) for key in SMOLVLA_IMAGE_FEATURES
+                f"observation.images.{key}": copy.deepcopy(wrist_stats)
+                for key in smolvla_feature_keys
             }
         patched_stats = _copy_mapping_with_updates(
             stats, stat_updates, remove=("observation.images.wrist",)
@@ -144,7 +151,7 @@ def _make_smolvla_dataset_meta(dataset_meta: Any) -> Any:
 
     print(
         "Patched SmolVLA metadata: observation.images.wrist -> "
-        "camera1/camera2/camera3/empty_camera_0/empty_camera_1"
+        + "/".join(smolvla_feature_keys)
     )
     return _copy_meta_with_features_and_stats(
         dataset_meta, patched_features, patched_stats
@@ -156,6 +163,8 @@ def _load_lerobot_policy_with_patched_meta(
     dataset_root: str,
     repo_id: str,
     device: Optional[str],
+    smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...],
 ):
     """Load policy like real_robot.load_lerobot_policy, with SmolVLA camera metadata patched."""
 
@@ -167,7 +176,9 @@ def _load_lerobot_policy_with_patched_meta(
     dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
-    policy_meta = _make_smolvla_dataset_meta(dataset.meta)
+    policy_meta = _make_smolvla_dataset_meta(
+        dataset.meta, smolvla_image_keys + smolvla_empty_camera_keys
+    )
     policy = make_policy(cfg=cfg, ds_meta=policy_meta)
     policy.to(resolved_device)
     policy.eval()
@@ -176,40 +187,49 @@ def _load_lerobot_policy_with_patched_meta(
     )
 
 
-def _prepare_smolvla_batch(batch: dict, task: str) -> dict:
+def _prepare_smolvla_batch(
+    batch: dict,
+    task: str,
+    cameras: Tuple[str, ...],
+    smolvla_image_keys: Tuple[str, ...],
+    smolvla_empty_camera_keys: Tuple[str, ...],
+) -> dict:
     batch["task"] = [task]
     batch["robot_type"] = [""]
 
-    # Runtime mapping: live wrist camera -> policy camera1
-    if (
-        "observation.images.wrist" in batch
-        and "observation.images.camera1" not in batch
-    ):
-        batch["observation.images.camera1"] = batch.pop("observation.images.wrist")
-
-    if "observation.images.camera1" not in batch:
+    live_image_keys = [f"observation.images.{camera}" for camera in cameras]
+    missing_live_keys = [key for key in live_image_keys if key not in batch]
+    if missing_live_keys:
         raise KeyError(
-            "Missing observation.images.camera1 after wrist->camera1 mapping. "
-            f"Available keys: {sorted(batch.keys())}"
+            "Missing live image observations for SmolVLA inference: "
+            f"{missing_live_keys}. Available keys: {sorted(batch.keys())}"
         )
 
-    cam1 = batch["observation.images.camera1"]
+    first_image = batch[live_image_keys[0]]
+    for camera, smolvla_key in zip(cameras, smolvla_image_keys):
+        live_key = f"observation.images.{camera}"
+        target_key = f"observation.images.{smolvla_key}"
+        if target_key not in batch:
+            batch[target_key] = batch[live_key]
+        if live_key != target_key:
+            batch.pop(live_key, None)
 
-    # Dummy empty cameras because policy was trained with empty_cameras=2
-    if "observation.images.camera2" not in batch:
-        batch["observation.images.camera2"] = torch.zeros_like(cam1)
-
-    if "observation.images.camera3" not in batch:
-        batch["observation.images.camera3"] = torch.zeros_like(cam1)
-
-    if "observation.images.empty_camera_0" not in batch:
-        batch["observation.images.empty_camera_0"] = torch.zeros_like(cam1)
-
-    if "observation.images.empty_camera_1" not in batch:
-        batch["observation.images.empty_camera_1"] = torch.zeros_like(cam1)
+    for smolvla_key in smolvla_image_keys + smolvla_empty_camera_keys:
+        target_key = f"observation.images.{smolvla_key}"
+        if target_key not in batch:
+            batch[target_key] = torch.zeros_like(first_image)
 
     return batch
 
+
+def _command_robot_without_extra_observation(
+    robot: ZMQClientRobot, target: np.ndarray
+) -> None:
+    """Send a joint target without doing RobotEnv.step's extra post-command get_obs()."""
+
+    if len(target) != robot.num_dofs():
+        raise ValueError(f"target:{len(target)}, robot:{robot.num_dofs()}")
+    robot.command_joint_state(target)
 
 def main(args: Args) -> None:
     bundle = _load_lerobot_policy_with_patched_meta(
@@ -217,6 +237,8 @@ def main(args: Args) -> None:
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
         device=args.device,
+        smolvla_image_keys=args.smolvla_image_keys,
+        smolvla_empty_camera_keys=args.smolvla_empty_camera_keys,
     )
 
     preprocess, postprocess = make_pre_post_processors(
@@ -256,18 +278,26 @@ def main(args: Args) -> None:
     print("repo_id:", args.repo_id)
     print("device:", bundle.device)
     print("live cameras:", args.cameras)
+    print("SmolVLA image keys:", args.smolvla_image_keys)
+    print("SmolVLA empty camera keys:", args.smolvla_empty_camera_keys)
     print("execute:", args.execute)
     print("duration:", args.duration)
     print("hz:", args.hz)
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("print_timing_diagnostics:", args.print_timing_diagnostics)
     print("task:", args.task)
 
     print("\nRuntime mapping:")
-    print("  observation.images.wrist   -> observation.images.camera1")
-    print("  observation.images.camera2 -> zeros_like(camera1)")
-    print("  observation.images.camera3 -> zeros_like(camera1)")
+    for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
+        print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
+    zero_smolvla_keys = (
+        args.smolvla_image_keys[len(args.cameras):]
+        + args.smolvla_empty_camera_keys
+    )
+    for smolvla_key in zero_smolvla_keys:
+        print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but robot will NOT move.")
@@ -287,17 +317,27 @@ def main(args: Args) -> None:
     for step in range(steps):
         started = time.time()
 
+        obs_started = time.time()
         obs = env.get_obs()
+        obs_elapsed = time.time() - obs_started
         batch = adapter.make_batch(obs)
         state = adapter.state_from_obs(obs)
 
+        policy_started = time.time()
         with torch.no_grad():
-            batch = _prepare_smolvla_batch(batch, args.task)
+            batch = _prepare_smolvla_batch(
+                batch,
+                args.task,
+                args.cameras,
+                args.smolvla_image_keys,
+                args.smolvla_empty_camera_keys,
+            )
             batch = preprocess(batch)
 
             policy_action = bundle.policy.select_action(batch)
             policy_action = postprocess(policy_action)
 
+        policy_elapsed = time.time() - policy_started
         safe = executor.make_safe_target(policy_action, state)
 
         print(f"\nStep {step + 1}/{steps}")
@@ -307,10 +347,22 @@ def main(args: Args) -> None:
         print("clipped_delta :", np.round(safe.clipped_delta, 3))
         print("target        :", np.round(safe.target, 3))
 
+        command_elapsed = 0.0
         if args.execute:
-            env.step(safe.target)
+            command_started = time.time()
+            _command_robot_without_extra_observation(robot, safe.target)
+            command_elapsed = time.time() - command_started
 
-        remaining = dt - (time.time() - started)
+        elapsed = time.time() - started
+        remaining = dt - elapsed
+        if args.print_timing_diagnostics:
+            print(
+                "timing       : "
+                f"obs={obs_elapsed:.3f}s policy={policy_elapsed:.3f}s "
+                f"command={command_elapsed:.3f}s total={elapsed:.3f}s "
+                f"sleep={max(0.0, remaining):.3f}s "
+                f"overrun={max(0.0, -remaining):.3f}s"
+            )
         if remaining > 0:
             time.sleep(remaining)
 
