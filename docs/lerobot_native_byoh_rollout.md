@@ -157,3 +157,23 @@ For the Panda state vector this includes the gripper joint, so the final reset c
 look like the gripper closes once at the end. The launcher now defaults to
 `RETURN_TO_INITIAL_POSITION=false` to leave the robot in the final rollout pose.
 Set it to `true` only if you explicitly want LeRobot's automatic shutdown reset.
+
+
+## ACT checkpoint launcher
+
+The SmolVLA checkpoint and the older ACT checkpoint were trained with different
+policy-facing camera names.  SmolVLA currently uses the generic launcher default
+`POLICY_CAMERA_NAMES=camera1,camera2,camera3`, while the ACT checkpoint in
+`~/lerobot_outputs/train/act_left_green_right_red_two_cams/checkpoints/last/pretrained_model`
+expects `observation.images.wrist`.  Use the dedicated ACT wrapper so the robot
+advertises the same visual feature name that the ACT policy expects:
+
+```bash
+./start_lerobot_native_act_policy.sh
+```
+
+The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
+`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, conservative ACT
+smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.  Override those
+environment variables before the command if a different ACT checkpoint expects a
+different camera schema.

@@ -39,6 +39,8 @@ echo "DURATION=$DURATION"
 echo "NUM_EPISODES=$NUM_EPISODES"
 echo "FPS=$FPS"
 echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
+echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
+echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
 
 for episode in $(seq 1 "$NUM_EPISODES"); do
   echo "Starting rollout episode $episode/$NUM_EPISODES"
