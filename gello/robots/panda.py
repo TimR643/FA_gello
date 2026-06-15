@@ -88,17 +88,20 @@ class PandaRobot(Robot):
         except Exception as e:
             print("Could not update joint positions:", e)
 
-        close_threshold = 0.25
-        open_threshold = 0.15
+        # ``get_joint_state`` reports the gripper as width / MAX_OPEN, so
+        # 1.0 means open and 0.0 means closed.  Keep the command convention
+        # identical to the observation/action convention used in LeRobot data.
+        close_threshold = 0.15
+        open_threshold = 0.25
 
-        gripper_closed = joint_state[-1] > close_threshold
-        gripper_open = joint_state[-1] < open_threshold
+        gripper_close_command = joint_state[-1] < close_threshold
+        gripper_open_command = joint_state[-1] > open_threshold
 
-        if gripper_closed and not self.gripper_closed:
+        if gripper_close_command and not self.gripper_closed:
             self.gripper_closed = True
             self.gripper.grasp(speed=0.1, force=1.0)
 
-        elif gripper_open and self.gripper_closed:
+        elif gripper_open_command and self.gripper_closed:
             self.gripper_closed = False
             self.gripper.goto(width=MAX_OPEN, speed=1.0, force=1.0)
 
