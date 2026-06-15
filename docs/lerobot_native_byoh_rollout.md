@@ -66,3 +66,31 @@ The plugin now performs a preflight `num_dofs()` request with `ZMQ_TIMEOUT_MS` s
 missing SSH tunnels or stopped ZMQ servers fail quickly instead of hanging on the
 first observation. If this fails, verify that the robot laptop forwards port 6001
 and the camera ports 5000/5001 to the machine running `lerobot-rollout`.
+
+## Reverse tunnel workflow from the Franka laptop
+
+If you start the tunnel from the Franka laptop, keep using reverse SSH forwards
+(`-R`).  This exposes the Franka laptop's local ZMQ servers on the HPC loopback
+interface, so the rollout on the HPC must keep `ROBOT_HOST=127.0.0.1`.
+
+Run this on the Franka laptop:
+
+```bash
+./start_franka_to_hpc_reverse_tunnel.sh
+```
+
+Equivalent manual command:
+
+```bash
+ssh -N \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:6001:127.0.0.1:6001 \
+  -R 127.0.0.1:5000:127.0.0.1:5000 \
+  -R 127.0.0.1:5001:127.0.0.1:5001 \
+  tim_st179133@172.16.0.11
+```
+
+Then, in a second shell on the HPC, run the LeRobot rollout with
+`ROBOT_HOST=127.0.0.1`. The reverse tunnel must stay open for the entire rollout.
