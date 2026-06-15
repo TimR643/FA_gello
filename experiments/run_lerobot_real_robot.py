@@ -53,6 +53,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     cameras: Tuple[str, ...] = ("wrist",)
+    policy_kind: str = "auto"
     smolvla_image_keys: Tuple[str, ...] = ("camera1", "camera2", "camera3")
 
     duration: float = 10.0
@@ -184,7 +185,17 @@ def _make_smolvla_dataset_meta(
     return _copy_meta_with_updates(dataset_meta, patched_features, patched_stats)
 
 
-def _load_smolvla_policy(
+def _policy_type_name(cfg: Any) -> str:
+    """Return a lowercase LeRobot policy type/name from config metadata."""
+
+    for attr in ("type", "policy_type", "name"):
+        value = getattr(cfg, attr, None)
+        if value:
+            return str(value).lower()
+    return cfg.__class__.__name__.lower()
+
+
+def _load_policy(
     *,
     checkpoint: str,
     dataset_root: str,
@@ -202,8 +213,14 @@ def _load_smolvla_policy(
     dataset = LeRobotDataset(repo_id=repo_id, root=dataset_root)
     cfg = PreTrainedConfig.from_pretrained(checkpoint)
     cfg.device = resolved_device
-    policy_meta = _make_smolvla_dataset_meta(
-        dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_image_keys
+    policy_type = _policy_type_name(cfg)
+    use_smolvla_mapping = policy_type == "smolvla"
+    policy_meta = (
+        _make_smolvla_dataset_meta(
+            dataset.meta, cameras=cameras, smolvla_image_keys=smolvla_image_keys
+        )
+        if use_smolvla_mapping
+        else dataset.meta
     )
     policy = make_policy(cfg=cfg, ds_meta=policy_meta)
     policy.to(resolved_device)
@@ -279,7 +296,7 @@ def _write_rgb_ppm(path: Path, image: np.ndarray) -> None:
         handle.write(np.ascontiguousarray(img).tobytes())
 
 def main(args: Args) -> None:
-    bundle = _load_smolvla_policy(
+    bundle = _load_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
@@ -288,11 +305,19 @@ def main(args: Args) -> None:
         device=args.device,
     )
 
-    preprocess, postprocess = make_pre_post_processors(
-        bundle.policy.config,
-        args.checkpoint,
-        preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
-    )
+    policy_type = _policy_type_name(bundle.policy.config)
+    if args.policy_kind not in {"auto", "act", "smolvla"}:
+        raise ValueError("policy_kind must be one of: auto, act, smolvla")
+    effective_policy_kind = policy_type if args.policy_kind == "auto" else args.policy_kind
+    use_smolvla_runtime = effective_policy_kind == "smolvla"
+
+    preprocess = postprocess = None
+    if use_smolvla_runtime:
+        preprocess, postprocess = make_pre_post_processors(
+            bundle.policy.config,
+            args.checkpoint,
+            preprocessor_overrides={"device_processor": {"device": str(bundle.device)}},
+        )
 
     adapter = LeRobotObservationAdapter(
         device=bundle.device,
@@ -326,6 +351,8 @@ def main(args: Args) -> None:
     print("repo_id:", args.repo_id)
     print("device:", bundle.device)
     print("live cameras:", args.cameras)
+    print("policy_type:", policy_type)
+    print("policy_kind:", effective_policy_kind)
     print("SmolVLA image keys:", args.smolvla_image_keys)
     print("execute:", args.execute)
     print("duration:", args.duration)
@@ -344,12 +371,15 @@ def main(args: Args) -> None:
     print("zero_live_cameras:", args.zero_live_cameras)
     print("task:", args.task)
 
-    print("\nRuntime image mapping:")
-    for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
-        print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
-    if len(args.smolvla_image_keys) > len(args.cameras):
-        for smolvla_key in args.smolvla_image_keys[len(args.cameras):]:
-            print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
+    if use_smolvla_runtime:
+        print("\nRuntime image mapping:")
+        for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
+            print(f"  observation.images.{live_camera} -> observation.images.{smolvla_key}")
+        if len(args.smolvla_image_keys) > len(args.cameras):
+            for smolvla_key in args.smolvla_image_keys[len(args.cameras):]:
+                print(f"  observation.images.{smolvla_key} -> zeros_like(first live camera)")
+    else:
+        print("\nRuntime image mapping: using dataset camera names directly")
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but the robot will not move.")
@@ -387,13 +417,15 @@ def main(args: Args) -> None:
             _reset_policy(bundle.policy)
 
         with torch.no_grad():
-            batch = _prepare_smolvla_batch(
-                batch, args.task, args.cameras, args.smolvla_image_keys
-            )
-            batch = preprocess(batch)
+            if use_smolvla_runtime:
+                batch = _prepare_smolvla_batch(
+                    batch, args.task, args.cameras, args.smolvla_image_keys
+                )
+                batch = preprocess(batch)
 
             policy_action = bundle.policy.select_action(batch)
-            policy_action = postprocess(policy_action)
+            if use_smolvla_runtime:
+                policy_action = postprocess(policy_action)
 
         safe = executor.make_safe_target(policy_action, state)
         diagnostics = diagnose_action_state_interpretation(policy_action, state)
@@ -406,15 +438,17 @@ def main(args: Args) -> None:
                     for camera in args.zero_live_cameras:
                         key = f"observation.images.{camera}"
                         cf_batch[key] = torch.zeros_like(cf_batch[key])
-                    cf_batch = _prepare_smolvla_batch(
-                        cf_batch,
-                        counterfactual_task,
-                        args.cameras,
-                        args.smolvla_image_keys,
-                    )
-                    cf_batch = preprocess(cf_batch)
+                    if use_smolvla_runtime:
+                        cf_batch = _prepare_smolvla_batch(
+                            cf_batch,
+                            counterfactual_task,
+                            args.cameras,
+                            args.smolvla_image_keys,
+                        )
+                        cf_batch = preprocess(cf_batch)
                     cf_action = bundle.policy.select_action(cf_batch)
-                    cf_action = postprocess(cf_action)
+                    if use_smolvla_runtime:
+                        cf_action = postprocess(cf_action)
                     cf_safe = executor.make_safe_target(cf_action, state)
                     counterfactual_results.append((counterfactual_task, cf_safe))
                 _reset_policy(bundle.policy)
