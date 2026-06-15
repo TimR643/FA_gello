@@ -12,9 +12,6 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-python -m pip install -e .
-python -m pip install -e lerobot_robot_gello
-
 export CKPT="${CKPT:-$HOME/lerobot_outputs/smolvla_left_green_right_red_two_cameras_v2/checkpoints/last/pretrained_model}"
 : "${TASK:=Move right when the red block is visible, move left if the green block is visible}"
 : "${DURATION:=50}"
@@ -22,7 +19,35 @@ export CKPT="${CKPT:-$HOME/lerobot_outputs/smolvla_left_green_right_red_two_came
 : "${FPS:=8}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 
-test -d "$CKPT" || { echo "FEHLT: CKPT=$CKPT"; exit 1; }
+resolve_policy_path() {
+  local candidate="$1"
+  if [[ -f "$candidate/config.json" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if [[ -f "$candidate/pretrained_model/config.json" ]]; then
+    printf '%s\n' "$candidate/pretrained_model"
+    return 0
+  fi
+  return 1
+}
+
+if ! CKPT="$(resolve_policy_path "$CKPT")"; then
+  cat >&2 <<EOF
+FEHLT: CKPT=$CKPT
+CKPT muss auf ein LeRobot pretrained_model-Verzeichnis mit config.json zeigen.
+Beispiele:
+  .../checkpoints/last/pretrained_model
+  .../checkpoints/<step>/pretrained_model
+Wenn du nur .../checkpoints/<step> angibst, akzeptiert das Skript das ebenfalls,
+sofern darunter pretrained_model/config.json existiert.
+EOF
+  exit 1
+fi
+export CKPT
+
+python -m pip install -e .
+python -m pip install -e lerobot_robot_gello
 
 if ! command -v lerobot-rollout >/dev/null 2>&1; then
   echo "FEHLT: lerobot-rollout wurde nicht gefunden."

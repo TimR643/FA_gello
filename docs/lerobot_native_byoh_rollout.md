@@ -177,3 +177,20 @@ The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
 conservative ACT smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.
 Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
+
+## Checkpoint path layout
+
+`CKPT` must resolve to a LeRobot `pretrained_model` directory that contains
+`config.json`.  Valid examples are:
+
+```bash
+CKPT=/path/to/checkpoints/last/pretrained_model ./start_lerobot_native_act_policy.sh
+CKPT=/path/to/checkpoints/100000/pretrained_model ./start_lerobot_native_act_policy.sh
+```
+
+For convenience, the launcher also accepts the parent step directory when it
+contains `pretrained_model/config.json`, for example
+`CKPT=/path/to/checkpoints/100000`.  A path such as
+`.../checkpoints/last/100000` is not a LeRobot pretrained model directory unless
+it contains its own `config.json`, so the script now fails before reinstalling the
+packages and prints the expected layout.
