@@ -21,7 +21,7 @@ class GelloZMQConfig(RobotConfig):
     camera_host: str | None = None
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
-    cameras: tuple[str, ...] = ("wrist",)
+    camera_names: tuple[str, ...] = ("wrist", "base")
     state_key: str = "observation.state"
     action_key: str = "action"
     num_dofs: int = 8

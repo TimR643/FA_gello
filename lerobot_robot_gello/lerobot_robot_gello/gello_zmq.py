@@ -41,7 +41,7 @@ class GelloZMQ(Robot):
     @property
     def observation_features(self) -> dict[str, Any]:
         features: dict[str, Any] = {self.config.state_key: (self.config.num_dofs,)}
-        for camera in self.config.cameras:
+        for camera in self.config.camera_names:
             features[f"observation.images.{camera}"] = (
                 self.config.image_height,
                 self.config.image_width,
@@ -66,7 +66,7 @@ class GelloZMQ(Robot):
             port=self.config.robot_port, host=self.config.robot_host
         )
         camera_host = self.config.camera_host or self.config.robot_host
-        for camera in self.config.cameras:
+        for camera in self.config.camera_names:
             if camera == "wrist":
                 self.cameras[camera] = ZMQClientCamera(
                     port=self.config.wrist_camera_port, host=camera_host
