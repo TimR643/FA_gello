@@ -151,7 +151,7 @@ class GelloZMQ(Robot):
         obs: dict[str, Any] = {self.config.state_key: state}
         for camera, client in self.cameras.items():
             rgb, _depth = client.read(
-                (self.config.image_height, self.config.image_width)
+                (self.config.image_width, self.config.image_height)
             )
             image = np.asarray(rgb)
             if image.shape != (self.config.image_height, self.config.image_width, 3):

@@ -113,3 +113,11 @@ rollout at `ROBOT_HOST=127.0.0.1` but start the reverse tunnel with e.g.:
 ```bash
 LOCAL_ZMQ_HOST=<FRANKA_LAPTOP_IP> ./start_franka_to_hpc_reverse_tunnel.sh
 ```
+
+
+## Camera image size convention
+
+The GELLO RealSense camera driver passes `img_size` to OpenCV as `(width, height)`.
+The LeRobot feature schema is still declared as image shape `(height, width, 3)`.
+Therefore the plugin requests `(image_width, image_height)` from ZMQ and validates
+that the returned RGB image is `(image_height, image_width, 3)`.
