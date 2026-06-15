@@ -22,20 +22,22 @@ that convention and wraps the existing GELLO ZMQ robot and camera servers.
 ./start_lerobot_native_real_policy.sh
 ```
 
+The policy launcher uses `lerobot-rollout`, not `lerobot-record`, because
+LeRobot 0.5.x exposes dataset-recording arguments under `--dataset.*` and does
+not accept `--policy.path` on `lerobot-record`.
+
 Useful overrides:
 
 ```bash
 CKPT=/path/to/pretrained_model \
-DATASET_ROOT=/home/tim/lerobot_data/eval_native \
-DATASET_REPO_ID=TimR643/eval_native \
 ROBOT_HOST=127.0.0.1 \
-FPS=5 \
+DURATION=30 \
 MAX_JOINT_DELTA=0.01 \
 ./start_lerobot_native_real_policy.sh
 ```
 
 The script installs both this repository and `lerobot_robot_gello` in editable
-mode, then calls `lerobot-record --robot.type=gello_zmq --policy.path=...`.
+mode, then calls `lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
 
 ## Safety defaults
 
