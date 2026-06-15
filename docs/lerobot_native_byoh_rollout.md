@@ -143,3 +143,17 @@ For additional low-pass smoothing, set `COMMAND_SMOOTHING_ALPHA` below `1.0`.
 the new safe target with the previous command before sending it to ZMQ. The
 smoothed command is clipped again against the same per-step safety limits before
 it reaches the robot.
+
+
+## Rollout FPS and shutdown reset
+
+LeRobot's rollout runtime defaults to 30 FPS. If the live loop is only reaching
+about 8 Hz, pass `FPS=8` (or the measured stable rate) so LeRobot does not try to
+command faster than cameras/inference/ZMQ can run. The launcher now defaults to
+`FPS=8` for this setup.
+
+LeRobot also defaults to returning the robot to its initial position on shutdown.
+For the Panda state vector this includes the gripper joint, so the final reset can
+look like the gripper closes once at the end. The launcher now defaults to
+`RETURN_TO_INITIAL_POSITION=false` to leave the robot in the final rollout pose.
+Set it to `true` only if you explicitly want LeRobot's automatic shutdown reset.

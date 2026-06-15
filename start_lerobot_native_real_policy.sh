@@ -19,6 +19,8 @@ export CKPT="${CKPT:-$HOME/lerobot_outputs/smolvla_left_green_right_red_two_came
 : "${TASK:=Move right when the red block is visible, move left if the green block is visible}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
+: "${FPS:=8}"
+: "${RETURN_TO_INITIAL_POSITION:=false}"
 
 test -d "$CKPT" || { echo "FEHLT: CKPT=$CKPT"; exit 1; }
 
@@ -35,12 +37,16 @@ echo "CKPT=$CKPT"
 echo "TASK=$TASK"
 echo "DURATION=$DURATION"
 echo "NUM_EPISODES=$NUM_EPISODES"
+echo "FPS=$FPS"
+echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
 
 for episode in $(seq 1 "$NUM_EPISODES"); do
   echo "Starting rollout episode $episode/$NUM_EPISODES"
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
+    --fps="$FPS" \
+    --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
     --robot.robot_port="${ROBOT_PORT:-6001}" \
