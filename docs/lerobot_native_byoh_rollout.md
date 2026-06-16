@@ -232,3 +232,21 @@ START_GRIPPER_TOLERANCE=0.08 \
 To convert between radians and degrees, use `degrees = radians * 180 / pi` and
 `radians = degrees * pi / 180`.  The default arm pose above is approximately
 `0.0905,0,0,-2.2131,2.1220,-0.9493,0.8868` radians.
+
+## Low-rate wrist camera preview
+
+You can preview the wrist camera through the existing ZMQ camera server with:
+
+```bash
+./view_wrist_camera.sh
+```
+
+The preview is intentionally low-rate (`PREVIEW_FPS=2` by default) because it is
+an additional ZMQ camera client.  The camera server serves requests serially, so
+leaving the preview open during recording or policy rollout can reduce camera FPS
+or disturb timing.  Use it for setup/alignment, then close it before starting the
+real recording/rollout.  If you need a different rate or port:
+
+```bash
+PREVIEW_FPS=1 WRIST_CAMERA_PORT=5000 ./view_wrist_camera.sh
+```
