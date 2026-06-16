@@ -12,8 +12,8 @@ import zmq
 
 from gello.zmq_core.robot_node import ZMQClientRobot
 
-DEFAULT_START_DEG = (0.0, -90.0, 90.0, -90.0, -90.0, 0.0, 0.0)
-DEFAULT_GRIPPER_OPEN = 1.0
+DEFAULT_START_RAD = (-0.0905, -0.0038, -0.0327, -2.2140, -0.0262, 2.1220, -0.9494)
+DEFAULT_GRIPPER_OPEN = 0.8868
 
 
 def _parse_floats(text: str) -> tuple[float, ...]:
@@ -25,9 +25,10 @@ def _target_from_args(args: argparse.Namespace) -> np.ndarray:
         raise ValueError("Use only one of --target-rad or --target-deg")
     if args.target_rad:
         arm = np.asarray(_parse_floats(args.target_rad), dtype=np.float32)
+    elif args.target_deg:
+        arm = np.deg2rad(np.asarray(_parse_floats(args.target_deg), dtype=np.float32))
     else:
-        target_deg = args.target_deg or ",".join(str(value) for value in DEFAULT_START_DEG)
-        arm = np.deg2rad(np.asarray(_parse_floats(target_deg), dtype=np.float32))
+        arm = np.asarray(DEFAULT_START_RAD, dtype=np.float32)
     if arm.shape != (7,):
         raise ValueError(f"Expected 7 arm joints, got {arm.shape[0]} values")
     if args.ignore_gripper:
@@ -90,9 +91,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target-deg",
         default=None,
-        help="Comma-separated 7-DoF arm target in degrees. Default: 0,-90,90,-90,-90,0,0",
+        help="Comma-separated 7-DoF arm target in degrees",
     )
-    parser.add_argument("--target-rad", default=None, help="Comma-separated 7-DoF arm target in radians")
+    parser.add_argument(
+        "--target-rad",
+        default=None,
+        help="Comma-separated 7-DoF arm target in radians. Default: -0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494",
+    )
     parser.add_argument("--target-gripper", type=float, default=DEFAULT_GRIPPER_OPEN)
     parser.add_argument("--arm-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--gripper-tolerance", type=float, default=0.08)

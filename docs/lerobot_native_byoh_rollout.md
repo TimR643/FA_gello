@@ -198,9 +198,10 @@ packages and prints the expected layout.
 ## Checking the recording start pose
 
 Use `check_gello_start_position.sh` before recording to verify that the live
-Panda/GELLO ZMQ state is close to the desired start pose.  By default it checks
-against the same arm pose used by the existing GELLO reset path
-`0,-90,90,-90,-90,0,0` degrees plus an open normalized gripper value of `1.0`:
+Panda/GELLO ZMQ state is close to the desired start pose.  By default it now
+checks against the measured pose from Tim's accepted start screenshot:
+`-0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494` radians plus
+normalized gripper value `0.8868`:
 
 ```bash
 ./check_gello_start_position.sh
@@ -217,9 +218,12 @@ moving GELLO into place, run:
 Useful overrides:
 
 ```bash
-START_JOINTS_DEG="0,-90,90,-90,-90,0,0" \
-START_GRIPPER=1.0 \
+START_JOINTS_RAD="-0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494" \
+START_GRIPPER=0.8868 \
 START_ARM_TOLERANCE_RAD=0.035 \
 START_GRIPPER_TOLERANCE=0.08 \
 ./check_gello_start_position.sh
 ```
+
+To convert radians to degrees, multiply by `180 / pi`; for example, this default
+pose is approximately `-5.19,-0.22,-1.87,-126.85,-1.50,121.58,-54.40` degrees.
