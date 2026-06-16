@@ -245,8 +245,14 @@ The preview is intentionally low-rate (`PREVIEW_FPS=2` by default) because it is
 an additional ZMQ camera client.  The camera server serves requests serially, so
 leaving the preview open during recording or policy rollout can reduce camera FPS
 or disturb timing.  Use it for setup/alignment, then close it before starting the
-real recording/rollout.  If you need a different rate or port:
+real recording/rollout.
+
+If OpenCV was installed as `opencv-python-headless`, the script automatically
+falls back to a small MJPEG web preview.  Open the printed URL, usually
+`http://127.0.0.1:8080/`, in a browser on the same machine.  If you need a
+different rate or port:
 
 ```bash
 PREVIEW_FPS=1 WRIST_CAMERA_PORT=5000 ./view_wrist_camera.sh
+PREVIEW_BACKEND=http PREVIEW_HTTP_PORT=8081 ./view_wrist_camera.sh
 ```

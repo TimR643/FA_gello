@@ -18,4 +18,7 @@ python scripts/view_zmq_camera.py \
   --fps "${PREVIEW_FPS:-2}" \
   --timeout-ms "${ZMQ_TIMEOUT_MS:-3000}" \
   --window-name "${WINDOW_NAME:-GELLO wrist camera}" \
+  --backend "${PREVIEW_BACKEND:-auto}" \
+  --http-host "${PREVIEW_HTTP_HOST:-127.0.0.1}" \
+  --http-port "${PREVIEW_HTTP_PORT:-8080}" \
   "$@"
