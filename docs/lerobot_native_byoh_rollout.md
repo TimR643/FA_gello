@@ -194,3 +194,32 @@ contains `pretrained_model/config.json`, for example
 `.../checkpoints/last/100000` is not a LeRobot pretrained model directory unless
 it contains its own `config.json`, so the script now fails before reinstalling the
 packages and prints the expected layout.
+
+## Checking the recording start pose
+
+Use `check_gello_start_position.sh` before recording to verify that the live
+Panda/GELLO ZMQ state is close to the desired start pose.  By default it checks
+against the same arm pose used by the existing GELLO reset path
+`0,-90,90,-90,-90,0,0` degrees plus an open normalized gripper value of `1.0`:
+
+```bash
+./check_gello_start_position.sh
+```
+
+The command exits with status `0` when every joint is within tolerance and `1`
+otherwise, so it can be used as a pre-recording guard.  To watch while manually
+moving GELLO into place, run:
+
+```bash
+./check_gello_start_position.sh --watch
+```
+
+Useful overrides:
+
+```bash
+START_JOINTS_DEG="0,-90,90,-90,-90,0,0" \
+START_GRIPPER=1.0 \
+START_ARM_TOLERANCE_RAD=0.035 \
+START_GRIPPER_TOLERANCE=0.08 \
+./check_gello_start_position.sh
+```
