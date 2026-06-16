@@ -199,9 +199,9 @@ packages and prints the expected layout.
 
 Use `check_gello_start_position.sh` before recording to verify that the live
 Panda/GELLO ZMQ state is close to the desired start pose.  By default it now
-checks against the measured pose from Tim's accepted start screenshot:
-`-0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494` radians plus
-normalized gripper value `0.8868`:
+checks against Tim's preferred start pose:
+`5.185,0,0,-126.8,121.58,-54.39,50.81` degrees plus normalized gripper value
+`1.0`:
 
 ```bash
 ./check_gello_start_position.sh
@@ -209,21 +209,26 @@ normalized gripper value `0.8868`:
 
 The command exits with status `0` when every joint is within tolerance and `1`
 otherwise, so it can be used as a pre-recording guard.  To watch while manually
-moving GELLO into place, run:
+moving GELLO into place, run the slow watch mode:
 
 ```bash
-./check_gello_start_position.sh --watch
+./check_gello_start_position.sh --watch --period-s 5
 ```
+
+Do not leave `--watch` running during recording or policy rollout: it queries the
+same ZMQ robot server and can add enough load to disturb the real-time arm loop.
+Use it only before recording, then stop it with Ctrl-C.
 
 Useful overrides:
 
 ```bash
-START_JOINTS_RAD="-0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494" \
-START_GRIPPER=0.8868 \
+START_JOINTS_DEG="5.185,0,0,-126.8,121.58,-54.39,50.81" \
+START_GRIPPER=1.0 \
 START_ARM_TOLERANCE_RAD=0.035 \
 START_GRIPPER_TOLERANCE=0.08 \
 ./check_gello_start_position.sh
 ```
 
-To convert radians to degrees, multiply by `180 / pi`; for example, this default
-pose is approximately `-5.19,-0.22,-1.87,-126.85,-1.50,121.58,-54.40` degrees.
+To convert between radians and degrees, use `degrees = radians * 180 / pi` and
+`radians = degrees * pi / 180`.  The default arm pose above is approximately
+`0.0905,0,0,-2.2131,2.1220,-0.9493,0.8868` radians.

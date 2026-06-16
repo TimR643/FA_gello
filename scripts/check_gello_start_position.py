@@ -12,8 +12,8 @@ import zmq
 
 from gello.zmq_core.robot_node import ZMQClientRobot
 
-DEFAULT_START_RAD = (-0.0905, -0.0038, -0.0327, -2.2140, -0.0262, 2.1220, -0.9494)
-DEFAULT_GRIPPER_OPEN = 0.8868
+DEFAULT_START_RAD = (0.0905, 0.0, 0.0, -2.2131, 2.1220, -0.9493, 0.8868)
+DEFAULT_GRIPPER_OPEN = 1.0
 
 
 def _parse_floats(text: str) -> tuple[float, ...]:
@@ -50,11 +50,18 @@ def _format_row(name: str, current: float, target: float, error: float, toleranc
     return f"{status} {name:>8s}: current={current:+.4f} target={target:+.4f} error={error:.4f} tol={tolerance:.4f}"
 
 
-def _check_once(args: argparse.Namespace, target: np.ndarray) -> bool:
-    robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
-    _configure_timeout(robot, args.timeout_ms)
-    current = np.asarray(robot.get_joint_state(), dtype=np.float32)
-    robot.close()
+def _check_once(
+    args: argparse.Namespace, target: np.ndarray, robot: ZMQClientRobot | None = None
+) -> bool:
+    owns_robot = robot is None
+    if robot is None:
+        robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+        _configure_timeout(robot, args.timeout_ms)
+    try:
+        current = np.asarray(robot.get_joint_state(), dtype=np.float32)
+    finally:
+        if owns_robot:
+            robot.close()
 
     if current.shape[0] < target.shape[0]:
         raise ValueError(f"Robot returned {current.shape[0]} joints, target needs {target.shape[0]}")
@@ -96,14 +103,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target-rad",
         default=None,
-        help="Comma-separated 7-DoF arm target in radians. Default: -0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494",
+        help="Comma-separated 7-DoF arm target in radians. Default: 0.0905,0,0,-2.2131,2.1220,-0.9493,0.8868",
     )
     parser.add_argument("--target-gripper", type=float, default=DEFAULT_GRIPPER_OPEN)
     parser.add_argument("--arm-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--gripper-tolerance", type=float, default=0.08)
     parser.add_argument("--ignore-gripper", action="store_true")
     parser.add_argument("--watch", action="store_true", help="Repeat until interrupted")
-    parser.add_argument("--period-s", type=float, default=0.5)
+    parser.add_argument("--period-s", type=float, default=5.0)
     return parser
 
 
@@ -113,10 +120,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     target = _target_from_args(args)
     if not args.watch:
         return 0 if _check_once(args, target) else 1
-    while True:
-        _check_once(args, target)
-        print("Press Ctrl-C to stop.\n")
-        time.sleep(args.period_s)
+
+    robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
+    _configure_timeout(robot, args.timeout_ms)
+    try:
+        while True:
+            _check_once(args, target, robot=robot)
+            print(
+                "Press Ctrl-C to stop. Do not leave --watch running during "
+                "recording/rollout; it shares the robot ZMQ server.\n"
+            )
+            time.sleep(args.period_s)
+    finally:
+        robot.close()
 
 
 if __name__ == "__main__":

@@ -10,9 +10,9 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-TARGET_ARGS=(--target-rad "${START_JOINTS_RAD:--0.0905,-0.0038,-0.0327,-2.2140,-0.0262,2.1220,-0.9494}")
-if [[ -n "${START_JOINTS_DEG:-}" ]]; then
-  TARGET_ARGS=(--target-deg "$START_JOINTS_DEG")
+TARGET_ARGS=(--target-deg "${START_JOINTS_DEG:-5.185,0,0,-126.8,121.58,-54.39,50.81}")
+if [[ -n "${START_JOINTS_RAD:-}" ]]; then
+  TARGET_ARGS=(--target-rad "$START_JOINTS_RAD")
 fi
 
 python scripts/check_gello_start_position.py \
@@ -20,7 +20,7 @@ python scripts/check_gello_start_position.py \
   --robot-port "${ROBOT_PORT:-6001}" \
   --timeout-ms "${ZMQ_TIMEOUT_MS:-3000}" \
   "${TARGET_ARGS[@]}" \
-  --target-gripper "${START_GRIPPER:-0.8868}" \
+  --target-gripper "${START_GRIPPER:-1.0}" \
   --arm-tolerance-rad "${START_ARM_TOLERANCE_RAD:-0.035}" \
   --gripper-tolerance "${START_GRIPPER_TOLERANCE:-0.08}" \
   "$@"
