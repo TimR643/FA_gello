@@ -159,6 +159,56 @@ look like the gripper closes once at the end. The launcher now defaults to
 Set it to `true` only if you explicitly want LeRobot's automatic shutdown reset.
 
 
+## Troubleshooting slow or position-dependent picks
+
+The warning `Record loop is running slower ... than the target FPS` means the
+LeRobot rollout loop did not finish one full observation → policy → command cycle
+inside the requested period. For example, at `FPS=8` each cycle has only
+125 ms. Short dips to 7.8-7.9 Hz are usually harmless, but repeated drops to
+4-6 Hz mean frames can be skipped and actions arrive late.
+
+For faster Panda motion during rollout, first increase the safety step limits
+instead of blindly raising `FPS`. The ZMQ robot plugin clips each policy target to
+`MAX_JOINT_DELTA` radians per control tick and `MAX_GRIPPER_DELTA` gripper units
+before sending it to hardware, so the effective joint speed is approximately
+`FPS * MAX_JOINT_DELTA`. With the launcher defaults (`FPS=8`,
+`MAX_JOINT_DELTA=0.015`) this is about `0.12 rad/s` per joint. Try small,
+reversible increases such as:
+
+```bash
+MAX_JOINT_DELTA=0.02 MAX_GRIPPER_DELTA=0.04 FPS=8 ./start_lerobot_native_real_policy.sh
+```
+
+If the robot still tracks cleanly and the loop does not warn, you can test
+`MAX_JOINT_DELTA=0.025`. Do not raise `FPS` above the measured stable loop rate;
+if the system only sustains about 8 Hz, a higher FPS mostly increases dropped
+frames and timing jitter.
+
+When the center object is picked reliably but upper-left or upper-right objects
+are unreliable, the most likely causes are data/vision coverage rather than the
+Panda speed limit:
+
+- **Workspace coverage bias:** verify that training episodes contain enough
+  successful picks from the upper-left and upper-right regions, not only from the
+  center.
+- **Camera visibility:** replay the dataset frames and check whether the stone is
+  fully visible, sharp, and not clipped at the image edge for those upper
+  positions. If the camera sometimes did not see the full stone during training,
+  the policy can learn ambiguous or inconsistent actions for that region.
+- **Train/deploy mismatch:** make sure live camera names, ordering, crop/FOV,
+  lighting, table pose, and start pose match the training data. A small camera
+  shift hurts edge positions more than the center because edge objects leave the
+  familiar image distribution first.
+- **Timing jitter:** fix repeated 4-6 Hz dips before collecting more conclusions;
+  late observations can cause overshoot, especially for longer reaches to the
+  upper workspace.
+
+A quick diagnosis is to record 10-20 no-reset evaluation episodes per stone
+position and review both the success rate and the exact camera frames seen by the
+policy. If the policy reaches toward the wrong image location, improve/rebalance
+training data and camera coverage. If it reaches correctly but arrives late or
+undershoots, tune `MAX_JOINT_DELTA` and reduce rollout load.
+
 ## ACT checkpoint launcher
 
 The SmolVLA checkpoint and the older ACT checkpoint were trained with different
