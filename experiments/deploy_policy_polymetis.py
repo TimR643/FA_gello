@@ -31,7 +31,7 @@ from gello.lerobot.real_robot import (
     load_lerobot_policy,
     validate_policy_batch_keys,
 )
-from gello.utils.control_utils import LeRobotDatasetWriter
+from gello.utils.control_utils import LeRobotDatasetWriter, confirm_episode_keep
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
@@ -102,9 +102,10 @@ class CsvEpisodeEvaluator:
 class KeyboardEpisodeRecorder:
     """Keyboard-controlled LeRobot episode recorder.
 
-    Press ``S`` in the pygame window to start an episode and ``Q`` to stop/save
-    it. The class deliberately keeps policy inference and robot control inside
-    the same frame loop so every saved frame receives the policy action that was
+    Press ``S`` in the pygame window to start an episode and ``Q`` to stop it,
+    then confirm whether to save or discard it. The class deliberately keeps
+    policy inference and robot control inside the same frame loop so every saved
+    frame receives the policy action that was
     sent to the Polymetis robot.
     """
 
@@ -127,7 +128,7 @@ class KeyboardEpisodeRecorder:
 
         print("Keyboard recording manager ready:")
         print("  S: Episode starten")
-        print("  Q: Episode stoppen und speichern")
+        print("  Q: Episode stoppen; danach RIGHT=speichern oder LEFT=verwerfen")
 
     def __enter__(self) -> "KeyboardEpisodeRecorder":
         return self
@@ -159,7 +160,7 @@ class KeyboardEpisodeRecorder:
         on_start()
         period = 1.0 / self.fps
         frame_count = 0
-        LOGGER.info("Episode started. Press Q in the pygame window to stop/save it.")
+        LOGGER.info("Episode started. Press Q in the pygame window to stop it.")
 
         while True:
             started = time.time()
@@ -180,8 +181,15 @@ class KeyboardEpisodeRecorder:
                 time.sleep(remaining)
 
         self.state = "saving"
-        self.writer.save_episode()
-        self.episode_count += 1
+        if confirm_episode_keep(frame_count):
+            self.writer.save_episode()
+            self.episode_count += 1
+            LOGGER.info(
+                "Episode saved (%s/%s).", self.episode_count, self.num_episodes
+            )
+        else:
+            self.writer.discard_episode()
+            LOGGER.info("Episode discarded; it will not count toward the target count.")
         on_end()
         self.state = "idle"
 

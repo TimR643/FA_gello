@@ -3,7 +3,7 @@ from typing import Tuple
 
 import tyro
 
-from gello.utils.control_utils import LeRobotDatasetWriter
+from gello.utils.control_utils import LeRobotDatasetWriter, confirm_episode_keep
 from gello.zmq_core.recording_node import ZMQRecordingReceiver
 
 
@@ -61,13 +61,22 @@ def main(args: Args) -> None:
                 if frame_count % 100 == 0:
                     print(f"Recorded {frame_count} streamed frames")
             elif message_type == "stop" and recording:
-                writer.save_episode()
-                recording = False
-                print(f"Saved streamed episode with {frame_count} frames")
-            elif message_type == "quit":
-                if recording:
+                if confirm_episode_keep(frame_count):
                     writer.save_episode()
                     print(f"Saved streamed episode with {frame_count} frames")
+                else:
+                    writer.discard_episode()
+                    print(f"Discarded streamed episode with {frame_count} frames")
+                recording = False
+                frame_count = 0
+            elif message_type == "quit":
+                if recording:
+                    if confirm_episode_keep(frame_count):
+                        writer.save_episode()
+                        print(f"Saved streamed episode with {frame_count} frames")
+                    else:
+                        writer.discard_episode()
+                        print(f"Discarded streamed episode with {frame_count} frames")
                 break
             else:
                 print(f"Ignoring recording stream message: {message_type}")
