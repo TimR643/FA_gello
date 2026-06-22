@@ -31,7 +31,7 @@ Useful overrides:
 ```bash
 CKPT=/path/to/pretrained_model \
 ROBOT_HOST=127.0.0.1 \
-CAMERA_NAMES="wrist,base" \
+CAMERA_NAMES="wrist" \
 DURATION=30 \
 MAX_JOINT_DELTA=0.01 \
 ZMQ_TIMEOUT_MS=3000 \
@@ -128,10 +128,13 @@ that the returned RGB image is `(image_height, image_width, 3)`.
 LeRobot robot hardware features should be raw hardware names.  The rollout code
 turns camera feature keys such as `camera1` into dataset keys such as
 `observation.images.camera1`, and motor keys ending in `.pos` into
-`observation.state` / `action`.  For the SmolVLA two-camera checkpoint, the
-plugin maps live `wrist,base` cameras to policy-facing `camera1,camera2` and
-adds a black dummy `camera3` by default because the policy expects three visual
-features.
+`observation.state` / `action`.  The older custom SmolVLA deployment path mapped
+the live wrist camera to `observation.images.camera1` and padded
+`camera2`, `camera3`, `empty_camera_0`, and `empty_camera_1` with black images.
+The native GELLO rollout defaults now mirror that convention: `CAMERA_NAMES=wrist`
+and `POLICY_CAMERA_NAMES=camera1,camera2,camera3,empty_camera_0,empty_camera_1`.
+Do not feed the base camera into `camera2` unless the checkpoint was explicitly
+trained with a real second camera feature.
 
 
 ## Smoothness knobs
@@ -163,7 +166,7 @@ Set it to `true` only if you explicitly want LeRobot's automatic shutdown reset.
 
 The SmolVLA checkpoint and the older ACT checkpoint were trained with different
 policy-facing camera names.  SmolVLA currently uses the generic launcher default
-`POLICY_CAMERA_NAMES=camera1,camera2,camera3`, while the ACT checkpoint in
+`POLICY_CAMERA_NAMES=camera1,camera2,camera3,empty_camera_0,empty_camera_1`, while the ACT checkpoint in
 `~/lerobot_outputs/train/act_left_green_right_red_two_cams/checkpoints/last/pretrained_model`
 expects `observation.images.wrist`.  Use the dedicated ACT wrapper so the robot
 advertises the same visual feature name that the ACT policy expects:

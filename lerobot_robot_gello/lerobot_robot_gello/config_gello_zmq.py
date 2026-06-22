@@ -22,8 +22,8 @@ class GelloZMQConfig(RobotConfig):
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     zmq_timeout_ms: int = 3000
-    camera_names: str = "wrist,base"
-    policy_camera_names: str = "camera1,camera2,camera3"
+    camera_names: str = "wrist"
+    policy_camera_names: str = "camera1,camera2,camera3,empty_camera_0,empty_camera_1"
     state_key: str = "observation.state"
     action_key: str = "action"
     num_dofs: int = 8
