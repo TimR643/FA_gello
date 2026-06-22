@@ -34,22 +34,51 @@ def _episode_pattern(episode_index: int) -> re.Pattern[str]:
     return re.compile(rf"episode_0*{episode_index}(?:\D|$)")
 
 
+def _camera_tokens(camera: str) -> tuple[str, ...]:
+    """Return dataset video path tokens that can represent a live camera.
+
+    Some datasets are stored with physical names (``wrist``/``base``), while
+    SmolVLA-style datasets often use policy names (``camera1``/``camera2``).
+    The aligner accepts the physical camera name and searches the common aliases
+    so users do not need to remember the exact on-disk feature key.
+    """
+
+    aliases = {
+        "wrist": ("wrist", "camera1"),
+        "base": ("base", "camera2"),
+    }
+    names = aliases.get(camera, (camera,))
+    tokens: list[str] = []
+    for name in names:
+        tokens.extend((f"observation.images.{name}", name))
+    return tuple(dict.fromkeys(tokens))
+
+
 def _find_video(dataset_root: Path, camera: str, episode_index: int) -> Path:
-    camera_key = f"observation.images.{camera}"
+    camera_tokens = _camera_tokens(camera)
     candidates = []
+    inspected_videos = []
     for path in dataset_root.rglob("*.mp4"):
+        inspected_videos.append(path)
         text = path.as_posix()
-        if camera_key not in text and camera not in path.name:
+        if not any(token in text for token in camera_tokens):
             continue
         if not _episode_pattern(episode_index).search(path.stem):
             continue
         candidates.append(path)
     if not candidates:
+        examples = "\n".join(
+            f"  - {path.relative_to(dataset_root)}"
+            for path in sorted(inspected_videos)[:12]
+        )
+        if not examples:
+            examples = "  <no .mp4 files found>"
         raise FileNotFoundError(
             "Could not find a LeRobot video for "
             f"camera={camera!r}, episode={episode_index} under {dataset_root}. "
-            "Expected paths containing observation.images.<camera> and "
-            "episode_<index>.mp4."
+            f"Searched tokens: {camera_tokens}. Expected an episode_<index>.mp4 "
+            "file below the dataset videos directory. Example .mp4 files found:\n"
+            f"{examples}"
         )
     return sorted(candidates, key=lambda path: len(path.as_posix()))[0]
 
