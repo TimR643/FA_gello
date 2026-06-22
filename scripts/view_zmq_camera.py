@@ -32,6 +32,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=float, default=2.0)
     parser.add_argument("--timeout-ms", type=int, default=3000)
     parser.add_argument("--window-name", default="GELLO ZMQ camera")
+    parser.add_argument(
+        "--lerobot-key",
+        default=None,
+        help="Optional LeRobot observation key to print for this preview.",
+    )
     return parser
 
 
@@ -43,8 +48,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         "Previewing ZMQ camera "
         f"{args.host}:{args.port} at <= {args.fps:.2f} FPS. "
+        f"Requested frame format: RGB HxWx3 = {args.height}x{args.width}x3. "
         "Press 'q' or Esc to quit."
     )
+    if args.lerobot_key:
+        print(f"LeRobot key: {args.lerobot_key}")
     print(
         "Warning: this is another ZMQ camera client. Do not leave it running "
         "during recording/rollout if camera FPS matters."

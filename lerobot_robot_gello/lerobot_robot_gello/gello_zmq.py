@@ -30,7 +30,7 @@ class GelloZMQ(Robot):
         self.cameras: dict[str, ZMQClientCamera] = {}
         self._is_connected = False
         self._last_state: np.ndarray | None = None
-        self._last_command: np.ndarray | None = None
+        self._action_count = 0
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -195,44 +195,56 @@ class GelloZMQ(Robot):
             current = np.asarray(self.robot.get_joint_state(), dtype=np.float32)
         raw_action = self._extract_action_array(action)
         safe = self.executor.make_safe_target(raw_action, current)
-        target = self._smooth_safe_target(safe.target, current)
+        target = safe.target.astype(np.float32)
+        self._log_action_diagnostics(current, safe)
         self.robot.command_joint_state(target)
-        self._last_command = target
         return {
             key: float(value) for key, value in zip(self._joint_feature_names(), target)
         }
 
-    def _smooth_safe_target(
-        self, target: np.ndarray, current: np.ndarray
-    ) -> np.ndarray:
-        alpha = float(self.config.command_smoothing_alpha)
-        if not 0 < alpha <= 1:
-            raise ValueError(
-                "command_smoothing_alpha must be in the interval (0, 1], "
-                f"got {self.config.command_smoothing_alpha}"
-            )
-        if alpha >= 1.0:
-            return target.astype(np.float32)
+    def _log_action_diagnostics(self, current: np.ndarray, safe: Any) -> None:
+        every_n = int(self.config.log_action_diagnostics_every_n)
+        if every_n <= 0:
+            return
+        self._action_count += 1
+        if self._action_count % every_n != 1:
+            return
 
-        previous = self._last_command
-        if previous is None or previous.shape != target.shape:
-            previous = current
-        smoothed = alpha * target + (1.0 - alpha) * previous
-
-        delta = smoothed - current
-        delta[:-1] = np.clip(
-            delta[:-1],
-            -self.config.max_joint_delta,
-            self.config.max_joint_delta,
-        )
-        delta[-1] = np.clip(
-            delta[-1],
-            -self.config.max_gripper_delta,
-            self.config.max_gripper_delta,
-        )
+        names = self._joint_feature_names()
+        raw_delta = np.asarray(safe.raw_delta, dtype=np.float32)
+        clipped_delta = np.asarray(safe.clipped_delta, dtype=np.float32)
+        target = np.asarray(safe.target, dtype=np.float32)
         lower = np.asarray(self.config.joint_lower, dtype=np.float32)
         upper = np.asarray(self.config.joint_upper, dtype=np.float32)
-        return np.clip(current + delta, lower, upper).astype(np.float32)
+        margin = float(self.config.joint_limit_margin)
+
+        delta_clipped = np.abs(raw_delta - clipped_delta) > 1e-6
+        near_lower = target <= lower + margin
+        near_upper = target >= upper - margin
+        if not (np.any(delta_clipped) or np.any(near_lower) or np.any(near_upper)):
+            return
+
+        print(f"[gello_zmq action diagnostics step={self._action_count}]")
+        for index, name in enumerate(names):
+            flags: list[str] = []
+            if delta_clipped[index]:
+                flags.append("delta-clipped")
+            if near_lower[index]:
+                flags.append("near-lower-limit")
+            if near_upper[index]:
+                flags.append("near-upper-limit")
+            if not flags:
+                continue
+            print(
+                "  "
+                f"{name}: current={current[index]:+.4f} "
+                f"policy={safe.policy_action[index]:+.4f} "
+                f"raw_delta={raw_delta[index]:+.4f} "
+                f"sent_delta={clipped_delta[index]:+.4f} "
+                f"target={target[index]:+.4f} "
+                f"limits=[{lower[index]:+.4f},{upper[index]:+.4f}] "
+                f"flags={','.join(flags)}"
+            )
 
     def _extract_action_array(self, action: dict[str, Any] | Any) -> Any:
         if not isinstance(action, Mapping):

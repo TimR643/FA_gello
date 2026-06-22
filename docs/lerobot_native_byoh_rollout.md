@@ -128,29 +128,31 @@ that the returned RGB image is `(image_height, image_width, 3)`.
 LeRobot robot hardware features should be raw hardware names.  The rollout code
 turns camera feature keys such as `camera1` into dataset keys such as
 `observation.images.camera1`, and motor keys ending in `.pos` into
-`observation.state` / `action`.  For the SmolVLA two-camera checkpoint, the
-plugin maps live `wrist,base` cameras to policy-facing `camera1,camera2` and
-adds a black dummy `camera3` by default because the policy expects three visual
-features.
+`observation.state` / `action`.  For the current training setup, the first policy
+camera was the wrist camera, the second policy camera was the base camera, and
+only the third policy camera was empty.  The native GELLO rollout defaults mirror
+that convention: `CAMERA_NAMES=wrist,base` and
+`POLICY_CAMERA_NAMES=camera1,camera2,camera3`, so `camera1=wrist`,
+`camera2=base`, and `camera3` is padded with a black image.
 
 
 ## Smoothness knobs
 
-If the policy chooses the right behavior but the physical motion is still too
-jerky, reduce the per-step deltas first (`MAX_JOINT_DELTA`, `MAX_GRIPPER_DELTA`).
-For additional low-pass smoothing, set `COMMAND_SMOOTHING_ALPHA` below `1.0`.
-`1.0` preserves the raw clipped target, while values such as `0.3` or `0.5` blend
-the new safe target with the previous command before sending it to ZMQ. The
-smoothed command is clipped again against the same per-step safety limits before
-it reaches the robot.
+The rollout path no longer applies an additional low-pass smoothing alpha. The
+policy target is only passed through the safety executor, which clips each step
+with `MAX_JOINT_DELTA` and `MAX_GRIPPER_DELTA` before the command reaches ZMQ. If
+the physical motion is too jerky, reduce those per-step deltas or lower `FPS`; if
+the robot does not move far enough toward the table, increase the deltas
+carefully rather than reintroducing smoothing.
 
 
 ## Rollout FPS and shutdown reset
 
-LeRobot's rollout runtime defaults to 30 FPS. If the live loop is only reaching
-about 8 Hz, pass `FPS=8` (or the measured stable rate) so LeRobot does not try to
-command faster than cameras/inference/ZMQ can run. The launcher now defaults to
-`FPS=8` for this setup.
+LeRobot's rollout runtime defaults to 30 FPS. The observed live loop often runs
+around 7.8-8.0 Hz with occasional lower spikes, so targeting exactly `FPS=8` can
+trigger continuous "loop is running slower" warnings. The launcher now defaults
+to `FPS=7` to leave timing headroom; override `FPS` only after measuring that
+cameras, inference, and ZMQ can sustain the requested rate.
 
 LeRobot also defaults to returning the robot to its initial position on shutdown.
 For the Panda state vector this includes the gripper joint, so the final reset can
@@ -173,8 +175,8 @@ advertises the same visual feature name that the ACT policy expects:
 ```
 
 The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
-`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=8`,
-conservative ACT smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.
+`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=7`,
+conservative ACT per-step delta defaults, and `RETURN_TO_INITIAL_POSITION=false`.
 Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
 
@@ -255,3 +257,19 @@ real recording/rollout.  If you need a different rate or port:
 ```bash
 PREVIEW_FPS=1 WRIST_CAMERA_PORT=5000 ./view_wrist_camera.sh
 ```
+
+## Wrist camera alignment after a bump
+
+If the physical wrist camera was bumped, align it against a known-good LeRobot
+recording frame instead of eyeballing the robot pose alone:
+
+```bash
+DATASET_ROOT=/path/to/lerobot_dataset \
+REFERENCE_EPISODE_INDEX=0 \
+REFERENCE_FRAME_INDEX=0 \
+./align_wrist_camera_to_lerobot_frame.sh
+```
+
+The window shows the recorded reference frame, the live wrist image, an overlay,
+and an absolute-difference view. Move the camera until the live image matches the
+reference; stop this preview before recording or policy rollout.

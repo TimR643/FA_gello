@@ -90,3 +90,18 @@ def test_diagnostics_do_not_flag_absolute_targets_close_to_state():
     diagnostics = diagnose_action_state_interpretation(action, current)
 
     assert not diagnostics.likely_delta_action
+
+
+def test_gello_zmq_action_diagnostics_reports_delta_clipping(capsys):
+    from lerobot_robot_gello.config_gello_zmq import GelloZMQConfig
+    from lerobot_robot_gello.gello_zmq import GelloZMQ
+
+    robot = GelloZMQ(GelloZMQConfig(log_action_diagnostics_every_n=1))
+    current = np.zeros(8, dtype=np.float32)
+    safe = robot.executor.make_safe_target(np.ones(8, dtype=np.float32), current)
+
+    robot._log_action_diagnostics(current, safe)
+
+    output = capsys.readouterr().out
+    assert "delta-clipped" in output
+    assert "joint_0.pos" in output

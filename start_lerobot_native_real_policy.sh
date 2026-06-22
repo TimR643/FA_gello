@@ -16,7 +16,7 @@ export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/pick_red_green_lego/chec
 : "${TASK:=pick up the lego block, and go left if the block is green, go right if the block is red}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
-: "${FPS:=8}"
+: "${FPS:=7}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 
 resolve_policy_path() {
@@ -66,13 +66,16 @@ echo "FPS=$FPS"
 echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
 echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
 echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
+echo "MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.015}"
+echo "MAX_GRIPPER_DELTA=${MAX_GRIPPER_DELTA:-0.03}"
+echo "LOG_ACTION_DIAGNOSTICS_EVERY_N=${LOG_ACTION_DIAGNOSTICS_EVERY_N:-10}"
 
 for episode in $(seq 1 "$NUM_EPISODES"); do
   echo "Starting rollout episode $episode/$NUM_EPISODES"
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
-    --fps="$FPS" \pick up the lego block, and go left if the block is green, go right if the block is red
+    --fps="$FPS" \
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
@@ -83,9 +86,9 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}" \
     --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-wrist,base}}" \
     --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
-    --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}" \
-    --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}" \
-    --robot.command_smoothing_alpha="${COMMAND_SMOOTHING_ALPHA:-1.0}" \
+    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}" \
+    --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}" \
+    --robot.log_action_diagnostics_every_n="${LOG_ACTION_DIAGNOSTICS_EVERY_N:-10}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
     --task="$TASK" \
     --duration="$DURATION"
