@@ -136,13 +136,12 @@ features.
 
 ## Smoothness knobs
 
-If the policy chooses the right behavior but the physical motion is still too
-jerky, reduce the per-step deltas first (`MAX_JOINT_DELTA`, `MAX_GRIPPER_DELTA`).
-For additional low-pass smoothing, set `COMMAND_SMOOTHING_ALPHA` below `1.0`.
-`1.0` preserves the raw clipped target, while values such as `0.3` or `0.5` blend
-the new safe target with the previous command before sending it to ZMQ. The
-smoothed command is clipped again against the same per-step safety limits before
-it reaches the robot.
+The rollout path no longer applies an additional low-pass smoothing alpha. The
+policy target is only passed through the safety executor, which clips each step
+with `MAX_JOINT_DELTA` and `MAX_GRIPPER_DELTA` before the command reaches ZMQ. If
+the physical motion is too jerky, reduce those per-step deltas or lower `FPS`; if
+the robot does not move far enough toward the table, increase the deltas
+carefully rather than reintroducing smoothing.
 
 
 ## Rollout FPS and shutdown reset
