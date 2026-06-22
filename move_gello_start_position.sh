@@ -25,5 +25,8 @@ python scripts/move_gello_start_position.py \
   --gripper-tolerance "${START_GRIPPER_TOLERANCE:-0.08}" \
   --steps "${MOVE_STEPS:-80}" \
   --period-s "${MOVE_PERIOD_S:-0.04}" \
+  --settle-timeout-s "${MOVE_SETTLE_TIMEOUT_S:-8.0}" \
+  --feedback-gain "${MOVE_FEEDBACK_GAIN:-0.8}" \
+  --max-feedback-rad "${MOVE_MAX_FEEDBACK_RAD:-0.08}" \
   --hold-s "${MOVE_HOLD_S:-0.5}" \
   "$@"
