@@ -16,7 +16,7 @@ export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/pick_red_green_lego/chec
 : "${TASK:=pick up the lego block, and go left if the block is green, go right if the block is red}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
-: "${FPS:=8}"
+: "${FPS:=7}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 
 resolve_policy_path() {

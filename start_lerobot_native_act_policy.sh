@@ -9,7 +9,7 @@ set -euo pipefail
 export CKPT="${CKPT:-$HOME/lerobot_outputs/train/act_left_green_right_red_two_cams/checkpoints/last/pretrained_model}"
 export CAMERA_NAMES="${CAMERA_NAMES:-wrist}"
 export POLICY_CAMERA_NAMES="${POLICY_CAMERA_NAMES:-wrist}"
-export FPS="${FPS:-8}"
+export FPS="${FPS:-7}"
 export MAX_JOINT_DELTA="${MAX_JOINT_DELTA:-0.01}"
 export MAX_GRIPPER_DELTA="${MAX_GRIPPER_DELTA:-0.02}"
 export RETURN_TO_INITIAL_POSITION="${RETURN_TO_INITIAL_POSITION:-false}"

@@ -146,10 +146,11 @@ carefully rather than reintroducing smoothing.
 
 ## Rollout FPS and shutdown reset
 
-LeRobot's rollout runtime defaults to 30 FPS. If the live loop is only reaching
-about 8 Hz, pass `FPS=8` (or the measured stable rate) so LeRobot does not try to
-command faster than cameras/inference/ZMQ can run. The launcher now defaults to
-`FPS=8` for this setup.
+LeRobot's rollout runtime defaults to 30 FPS. The observed live loop often runs
+around 7.8-8.0 Hz with occasional lower spikes, so targeting exactly `FPS=8` can
+trigger continuous "loop is running slower" warnings. The launcher now defaults
+to `FPS=7` to leave timing headroom; override `FPS` only after measuring that
+cameras, inference, and ZMQ can sustain the requested rate.
 
 LeRobot also defaults to returning the robot to its initial position on shutdown.
 For the Panda state vector this includes the gripper joint, so the final reset can
@@ -172,7 +173,7 @@ advertises the same visual feature name that the ACT policy expects:
 ```
 
 The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
-`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=8`,
+`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=7`,
 conservative ACT per-step delta defaults, and `RETURN_TO_INITIAL_POSITION=false`.
 Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
