@@ -2,7 +2,11 @@
 
 import datetime
 import inspect
+import select
+import sys
+import termios
 import time
+import tty
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -134,6 +138,60 @@ class SaveInterface:
 
 
 
+def confirm_episode_keep(
+    frame_count: int, *, input_stream: Any = None, output_stream: Any = None
+) -> bool:
+    """Ask whether the just-recorded episode should be kept.
+
+    Uses the same style as LeRobot's recording tools: right arrow accepts the
+    episode, left arrow discards it.  When no interactive terminal is attached,
+    the safe default is to keep the episode so unattended recorders do not lose
+    data.
+    """
+
+    input_stream = input_stream or sys.stdin
+    output_stream = output_stream or sys.stdout
+
+    prompt = (
+        f"\nEpisode finished with {frame_count} frames. "
+        "Press RIGHT arrow to keep/save, LEFT arrow to discard: "
+    )
+    print(prompt, end="", flush=True, file=output_stream)
+
+    if not hasattr(input_stream, "fileno") or not input_stream.isatty():
+        print("no interactive TTY; keeping episode by default", file=output_stream)
+        return True
+
+    fd = input_stream.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            char = input_stream.read(1)
+            if char == "\x1b":
+                # Arrow keys arrive as ESC [ C / ESC [ D.  Use a short timeout
+                # so a bare ESC does not block forever waiting for the rest.
+                ready, _, _ = select.select([input_stream], [], [], 0.5)
+                if not ready:
+                    continue
+                second = input_stream.read(1)
+                third = input_stream.read(1) if second == "[" else ""
+                if second == "[" and third == "C":
+                    print("keep", file=output_stream)
+                    return True
+                if second == "[" and third == "D":
+                    print("discard", file=output_stream)
+                    return False
+            elif char.lower() in {"y", "s", "k", "\r", "\n"}:
+                print("keep", file=output_stream)
+                return True
+            elif char.lower() in {"n", "d", "x"}:
+                print("discard", file=output_stream)
+                return False
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
 JOINT_NAMES = [
     "panda_joint1",
     "panda_joint2",
@@ -243,6 +301,30 @@ class LeRobotDatasetWriter:
     def save_episode(self) -> None:
         self.dataset.save_episode()
 
+    def discard_episode(self) -> None:
+        """Drop the currently buffered, not-yet-saved episode frames."""
+
+        clear_episode_buffer = getattr(self.dataset, "clear_episode_buffer", None)
+        if callable(clear_episode_buffer):
+            clear_episode_buffer()
+            return
+
+        episode_buffer = getattr(self.dataset, "episode_buffer", None)
+        if isinstance(episode_buffer, dict):
+            for key, value in episode_buffer.items():
+                if isinstance(value, list):
+                    value.clear()
+                elif hasattr(value, "clear"):
+                    value.clear()
+                else:
+                    episode_buffer[key] = []
+            return
+
+        raise RuntimeError(
+            "Installed LeRobotDataset does not expose clear_episode_buffer() or "
+            "a mutable episode_buffer; cannot discard the pending episode safely."
+        )
+
     def finalize(self) -> None:
         self.dataset.finalize()
 
@@ -275,26 +357,40 @@ class LeRobotSaveInterface:
             batch_encoding_size=batch_encoding_size,
         )
         self._recording = False
+        self._frame_count = 0
 
         print("Use keyboard controls:")
         print("  S: Start recording")
-        print("  Q: Stop recording")
+        print("  Q: Stop recording, then confirm with RIGHT=save or LEFT=discard")
 
     def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
         state = self.kb_interface.update()
         if state == "start":
             self._recording = True
+            self._frame_count = 0
             print("Started recording episode into LeRobot dataset")
         elif state == "save" and self._recording:
             self.writer.add_frame(obs, action)
+            self._frame_count += 1
         elif state == "normal" and self._recording:
-            self.writer.save_episode()
+            if confirm_episode_keep(frame_count=self._frame_count):
+                self.writer.save_episode()
+                print("Episode saved")
+            else:
+                self.writer.discard_episode()
+                print("Episode discarded")
             self._recording = False
-            print("Episode saved")
+            self._frame_count = 0
         elif state == "quit":
             if self._recording:
-                self.writer.save_episode()
+                if confirm_episode_keep(frame_count=self._frame_count):
+                    self.writer.save_episode()
+                    print("Episode saved")
+                else:
+                    self.writer.discard_episode()
+                    print("Episode discarded")
                 self._recording = False
+                self._frame_count = 0
             self.writer.finalize()
             print("\nExiting.")
             return "quit"
@@ -322,7 +418,10 @@ class RecordingStreamInterface:
 
         print("Recording stream interface enabled. Use keyboard controls:")
         print("  S: Start streaming frames to the HPC recorder")
-        print("  Q: Stop current episode")
+        print(
+            "  Q: Stop current episode; "
+            "confirm on recorder with RIGHT=save or LEFT=discard"
+        )
 
     def _send(self, message: Dict[str, Any]) -> None:
         if not self.publisher.send(message) and message.get("type") == "frame":
