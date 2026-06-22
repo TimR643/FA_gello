@@ -257,3 +257,19 @@ real recording/rollout.  If you need a different rate or port:
 ```bash
 PREVIEW_FPS=1 WRIST_CAMERA_PORT=5000 ./view_wrist_camera.sh
 ```
+
+## Wrist camera alignment after a bump
+
+If the physical wrist camera was bumped, align it against a known-good LeRobot
+recording frame instead of eyeballing the robot pose alone:
+
+```bash
+DATASET_ROOT=/path/to/lerobot_dataset \
+REFERENCE_EPISODE_INDEX=0 \
+REFERENCE_FRAME_INDEX=0 \
+./align_wrist_camera_to_lerobot_frame.sh
+```
+
+The window shows the recorded reference frame, the live wrist image, an overlay,
+and an absolute-difference view. Move the camera until the live image matches the
+reference; stop this preview before recording or policy rollout.
