@@ -68,6 +68,7 @@ echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
 echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
 echo "MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.015}"
 echo "MAX_GRIPPER_DELTA=${MAX_GRIPPER_DELTA:-0.03}"
+echo "LOG_ACTION_DIAGNOSTICS_EVERY_N=${LOG_ACTION_DIAGNOSTICS_EVERY_N:-10}"
 
 for episode in $(seq 1 "$NUM_EPISODES"); do
   echo "Starting rollout episode $episode/$NUM_EPISODES"
@@ -87,6 +88,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}" \
+    --robot.log_action_diagnostics_every_n="${LOG_ACTION_DIAGNOSTICS_EVERY_N:-10}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
     --task="$TASK" \
     --duration="$DURATION"
