@@ -80,6 +80,16 @@ class Args:
 
     task: str = "Move right when the red block is visible, otherwise move left."
 
+    record_lerobot: bool = False
+    lerobot_record_root: str = "~/lerobot_data/smolvla_rollout"
+    lerobot_record_repo_id: str = "local/smolvla_rollout"
+    lerobot_record_fps: Optional[int] = None
+    lerobot_record_task: Optional[str] = None
+    lerobot_record_robot_type: str = "panda_gello"
+    lerobot_record_action: str = "target"
+    lerobot_streaming_encoding: bool = True
+    lerobot_batch_encoding_size: int = 1
+
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     host = args.camera_host or args.robot_host
@@ -279,6 +289,12 @@ def _write_rgb_ppm(path: Path, image: np.ndarray) -> None:
         handle.write(np.ascontiguousarray(img).tobytes())
 
 def main(args: Args) -> None:
+    if args.lerobot_record_action not in {"target", "policy_action"}:
+        raise ValueError(
+            "lerobot_record_action must be 'target' or 'policy_action', got "
+            f"{args.lerobot_record_action!r}"
+        )
+
     bundle = _load_smolvla_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
@@ -320,6 +336,22 @@ def main(args: Args) -> None:
         camera_dict=_make_camera_clients(args),
     )
 
+    recorder = None
+    recorded_frames = 0
+    if args.record_lerobot:
+        from gello.utils.control_utils import LeRobotDatasetWriter
+
+        recorder = LeRobotDatasetWriter(
+            root=args.lerobot_record_root,
+            repo_id=args.lerobot_record_repo_id,
+            fps=args.lerobot_record_fps or int(round(args.hz)),
+            task=args.lerobot_record_task or args.task,
+            robot_type=args.lerobot_record_robot_type,
+            camera_keys=args.cameras,
+            streaming_encoding=args.lerobot_streaming_encoding,
+            batch_encoding_size=args.lerobot_batch_encoding_size,
+        )
+
     print("\nLEROBOT SMOLVLA REAL-ROBOT ROLLOUT")
     print("checkpoint:", args.checkpoint)
     print("dataset_root:", args.dataset_root)
@@ -343,6 +375,13 @@ def main(args: Args) -> None:
     print("reset_policy_every_step:", args.reset_policy_every_step)
     print("zero_live_cameras:", args.zero_live_cameras)
     print("task:", args.task)
+    print("record_lerobot:", args.record_lerobot)
+    if args.record_lerobot:
+        print("lerobot_record_root:", args.lerobot_record_root)
+        print("lerobot_record_repo_id:", args.lerobot_record_repo_id)
+        print("lerobot_record_fps:", args.lerobot_record_fps or int(round(args.hz)))
+        print("lerobot_record_task:", args.lerobot_record_task or args.task)
+        print("lerobot_record_action:", args.lerobot_record_action)
 
     print("\nRuntime image mapping:")
     for live_camera, smolvla_key in zip(args.cameras, args.smolvla_image_keys):
@@ -368,122 +407,138 @@ def main(args: Args) -> None:
     dt = 1.0 / args.hz
     _reset_policy(bundle.policy)
 
-    for step in range(steps):
-        started = time.time()
+    try:
+        for step in range(steps):
+            started = time.time()
 
-        obs = env.get_obs()
-        batch = adapter.make_batch(obs)
-        for camera in args.zero_live_cameras:
-            key = f"observation.images.{camera}"
-            if key not in batch:
-                raise KeyError(
-                    f"Cannot zero missing live camera {camera!r}; "
-                    f"available batch keys: {list(batch.keys())}"
-                )
-            batch[key] = torch.zeros_like(batch[key])
-        state = adapter.state_from_obs(obs)
-
-        if args.reset_policy_every_step:
-            _reset_policy(bundle.policy)
-
-        with torch.no_grad():
-            batch = _prepare_smolvla_batch(
-                batch, args.task, args.cameras, args.smolvla_image_keys
-            )
-            batch = preprocess(batch)
-
-            policy_action = bundle.policy.select_action(batch)
-            policy_action = postprocess(policy_action)
-
-        safe = executor.make_safe_target(policy_action, state)
-        diagnostics = diagnose_action_state_interpretation(policy_action, state)
-        counterfactual_results = []
-        if args.debug_counterfactual_tasks:
-            with torch.no_grad():
-                for counterfactual_task in args.debug_counterfactual_tasks:
-                    _reset_policy(bundle.policy)
-                    cf_batch = adapter.make_batch(obs)
-                    for camera in args.zero_live_cameras:
-                        key = f"observation.images.{camera}"
-                        cf_batch[key] = torch.zeros_like(cf_batch[key])
-                    cf_batch = _prepare_smolvla_batch(
-                        cf_batch,
-                        counterfactual_task,
-                        args.cameras,
-                        args.smolvla_image_keys,
+            obs = env.get_obs()
+            batch = adapter.make_batch(obs)
+            for camera in args.zero_live_cameras:
+                key = f"observation.images.{camera}"
+                if key not in batch:
+                    raise KeyError(
+                        f"Cannot zero missing live camera {camera!r}; "
+                        f"available batch keys: {list(batch.keys())}"
                     )
-                    cf_batch = preprocess(cf_batch)
-                    cf_action = bundle.policy.select_action(cf_batch)
-                    cf_action = postprocess(cf_action)
-                    cf_safe = executor.make_safe_target(cf_action, state)
-                    counterfactual_results.append((counterfactual_task, cf_safe))
+                batch[key] = torch.zeros_like(batch[key])
+            state = adapter.state_from_obs(obs)
+
+            if args.reset_policy_every_step:
                 _reset_policy(bundle.policy)
 
-        print(f"\nStep {step + 1}/{steps}")
-        print("state         :", np.round(state, 3))
-        print("policy_action :", np.round(safe.policy_action, 3))
-        print("raw_delta     :", np.round(safe.raw_delta, 3))
-        print("clipped_delta :", np.round(safe.clipped_delta, 3))
-        print("target        :", np.round(safe.target, 3))
-        if args.print_camera_color_diagnostics:
-            for camera in args.cameras:
-                summary = summarize_rgb_image(
-                    obs[f"{camera}_rgb"], dominance_margin=args.camera_color_margin
+            with torch.no_grad():
+                batch = _prepare_smolvla_batch(
+                    batch, args.task, args.cameras, args.smolvla_image_keys
                 )
-                red_visible = summary.red_fraction >= args.camera_color_min_fraction
-                green_visible = summary.green_fraction >= args.camera_color_min_fraction
-                if red_visible and green_visible:
-                    color_guess = "mixed"
-                elif red_visible:
-                    color_guess = "red"
-                elif green_visible:
-                    color_guess = "green"
-                else:
-                    color_guess = "none"
-                print(
-                    f"camera {camera:>5s} : "
-                    f"rgb_mean=({summary.red_mean:.1f}, "
-                    f"{summary.green_mean:.1f}, {summary.blue_mean:.1f}) "
-                    f"red_dom={summary.red_dominance:.1f} "
-                    f"green_dom={summary.green_dominance:.1f} "
-                    f"red_px={100.0 * summary.red_fraction:.2f}% "
-                    f"green_px={100.0 * summary.green_fraction:.2f}% "
-                    f"guess={color_guess}"
+                batch = preprocess(batch)
+
+                policy_action = bundle.policy.select_action(batch)
+                policy_action = postprocess(policy_action)
+
+            safe = executor.make_safe_target(policy_action, state)
+            diagnostics = diagnose_action_state_interpretation(policy_action, state)
+            counterfactual_results = []
+            if args.debug_counterfactual_tasks:
+                with torch.no_grad():
+                    for counterfactual_task in args.debug_counterfactual_tasks:
+                        _reset_policy(bundle.policy)
+                        cf_batch = adapter.make_batch(obs)
+                        for camera in args.zero_live_cameras:
+                            key = f"observation.images.{camera}"
+                            cf_batch[key] = torch.zeros_like(cf_batch[key])
+                        cf_batch = _prepare_smolvla_batch(
+                            cf_batch,
+                            counterfactual_task,
+                            args.cameras,
+                            args.smolvla_image_keys,
+                        )
+                        cf_batch = preprocess(cf_batch)
+                        cf_action = bundle.policy.select_action(cf_batch)
+                        cf_action = postprocess(cf_action)
+                        cf_safe = executor.make_safe_target(cf_action, state)
+                        counterfactual_results.append((counterfactual_task, cf_safe))
+                    _reset_policy(bundle.policy)
+
+            print(f"\nStep {step + 1}/{steps}")
+            print("state         :", np.round(state, 3))
+            print("policy_action :", np.round(safe.policy_action, 3))
+            print("raw_delta     :", np.round(safe.raw_delta, 3))
+            print("clipped_delta :", np.round(safe.clipped_delta, 3))
+            print("target        :", np.round(safe.target, 3))
+            if args.print_camera_color_diagnostics:
+                for camera in args.cameras:
+                    summary = summarize_rgb_image(
+                        obs[f"{camera}_rgb"], dominance_margin=args.camera_color_margin
+                    )
+                    red_visible = summary.red_fraction >= args.camera_color_min_fraction
+                    green_visible = summary.green_fraction >= args.camera_color_min_fraction
+                    if red_visible and green_visible:
+                        color_guess = "mixed"
+                    elif red_visible:
+                        color_guess = "red"
+                    elif green_visible:
+                        color_guess = "green"
+                    else:
+                        color_guess = "none"
+                    print(
+                        f"camera {camera:>5s} : "
+                        f"rgb_mean=({summary.red_mean:.1f}, "
+                        f"{summary.green_mean:.1f}, {summary.blue_mean:.1f}) "
+                        f"red_dom={summary.red_dominance:.1f} "
+                        f"green_dom={summary.green_dominance:.1f} "
+                        f"red_px={100.0 * summary.red_fraction:.2f}% "
+                        f"green_px={100.0 * summary.green_fraction:.2f}% "
+                        f"guess={color_guess}"
+                    )
+
+            if (
+                args.debug_image_dir
+                and args.debug_save_image_every_n_steps > 0
+                and step % args.debug_save_image_every_n_steps == 0
+            ):
+                debug_dir = Path(args.debug_image_dir)
+                for camera in args.cameras:
+                    _write_rgb_ppm(
+                        debug_dir / f"step_{step + 1:04d}_{camera}.ppm",
+                        obs[f"{camera}_rgb"],
+                    )
+            if args.print_action_state_diagnostics:
+                print("abs_delta_l2  :", round(diagnostics.absolute_delta_l2, 3))
+                print("action_l2     :", round(diagnostics.action_l2, 3))
+                print("delta_target  :", np.round(diagnostics.delta_target, 3))
+                if diagnostics.likely_delta_action and args.action_mode == "absolute_joint_position":
+                    print(
+                        "WARNING      : policy output is small while absolute delta is large; "
+                        "this looks more like delta_joint_position than absolute_joint_position."
+                    )
+
+            for counterfactual_task, cf_safe in counterfactual_results:
+                print("counterfactual:", counterfactual_task)
+                print("  cf_action   :", np.round(cf_safe.policy_action, 3))
+                print("  cf_raw_delta:", np.round(cf_safe.raw_delta, 3))
+                print("  cf_target   :", np.round(cf_safe.target, 3))
+
+            if recorder is not None:
+                record_action = (
+                    safe.policy_action
+                    if args.lerobot_record_action == "policy_action"
+                    else safe.target
                 )
+                recorder.add_frame(obs, record_action)
+                recorded_frames += 1
 
-        if (
-            args.debug_image_dir
-            and args.debug_save_image_every_n_steps > 0
-            and step % args.debug_save_image_every_n_steps == 0
-        ):
-            debug_dir = Path(args.debug_image_dir)
-            for camera in args.cameras:
-                _write_rgb_ppm(
-                    debug_dir / f"step_{step + 1:04d}_{camera}.ppm",
-                    obs[f"{camera}_rgb"],
-                )
-        if args.print_action_state_diagnostics:
-            print("abs_delta_l2  :", round(diagnostics.absolute_delta_l2, 3))
-            print("action_l2     :", round(diagnostics.action_l2, 3))
-            print("delta_target  :", np.round(diagnostics.delta_target, 3))
-            if diagnostics.likely_delta_action and args.action_mode == "absolute_joint_position":
-                print(
-                    "WARNING      : policy output is small while absolute delta is large; "
-                    "this looks more like delta_joint_position than absolute_joint_position."
-                )
+            if args.execute:
+                env.step(safe.target)
 
-        for counterfactual_task, cf_safe in counterfactual_results:
-            print("counterfactual:", counterfactual_task)
-            print("  cf_action   :", np.round(cf_safe.policy_action, 3))
-            print("  cf_raw_delta:", np.round(cf_safe.raw_delta, 3))
-            print("  cf_target   :", np.round(cf_safe.target, 3))
-
-        if args.execute:
-            env.step(safe.target)
-
-        remaining = dt - (time.time() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+            remaining = dt - (time.time() - started)
+            if remaining > 0:
+                time.sleep(remaining)
+    finally:
+        if recorder is not None:
+            if recorded_frames > 0:
+                recorder.save_episode()
+                print(f"\nSaved LeRobot rollout episode with {recorded_frames} frames.")
+            recorder.finalize()
 
     print("\nFinished LeRobot SmolVLA real-robot rollout.")
 

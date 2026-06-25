@@ -52,6 +52,16 @@ class Args:
     max_gripper_delta: float = 0.03
     action_mode: str = "absolute_joint_position"
 
+    record_lerobot: bool = False
+    lerobot_record_root: str = "~/lerobot_data/policy_rollout"
+    lerobot_record_repo_id: str = "local/policy_rollout"
+    lerobot_record_fps: Optional[int] = None
+    lerobot_record_task: str = "Policy rollout on the Panda robot."
+    lerobot_record_robot_type: str = "panda_gello"
+    lerobot_record_action: str = "target"
+    lerobot_streaming_encoding: bool = True
+    lerobot_batch_encoding_size: int = 1
+
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
     host = args.camera_host or args.robot_host
@@ -69,6 +79,12 @@ def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:
 
 
 def main(args: Args) -> None:
+    if args.lerobot_record_action not in {"target", "policy_action"}:
+        raise ValueError(
+            "lerobot_record_action must be 'target' or 'policy_action', got "
+            f"{args.lerobot_record_action!r}"
+        )
+
     bundle = load_lerobot_policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
@@ -98,6 +114,22 @@ def main(args: Args) -> None:
         camera_dict=_make_camera_clients(args),
     )
 
+    recorder = None
+    recorded_frames = 0
+    if args.record_lerobot:
+        from gello.utils.control_utils import LeRobotDatasetWriter
+
+        recorder = LeRobotDatasetWriter(
+            root=args.lerobot_record_root,
+            repo_id=args.lerobot_record_repo_id,
+            fps=args.lerobot_record_fps or int(round(args.hz)),
+            task=args.lerobot_record_task,
+            robot_type=args.lerobot_record_robot_type,
+            camera_keys=args.cameras,
+            streaming_encoding=args.lerobot_streaming_encoding,
+            batch_encoding_size=args.lerobot_batch_encoding_size,
+        )
+
     print("\nLEROBOT REAL-ROBOT ROLLOUT")
     print("checkpoint:", args.checkpoint)
     print("dataset_root:", args.dataset_root)
@@ -110,6 +142,13 @@ def main(args: Args) -> None:
     print("action_mode:", args.action_mode)
     print("max_joint_delta:", args.max_joint_delta)
     print("max_gripper_delta:", args.max_gripper_delta)
+    print("record_lerobot:", args.record_lerobot)
+    if args.record_lerobot:
+        print("lerobot_record_root:", args.lerobot_record_root)
+        print("lerobot_record_repo_id:", args.lerobot_record_repo_id)
+        print("lerobot_record_fps:", args.lerobot_record_fps or int(round(args.hz)))
+        print("lerobot_record_task:", args.lerobot_record_task)
+        print("lerobot_record_action:", args.lerobot_record_action)
 
     if not args.execute:
         print("\nDRY RUN: policy will be evaluated, but the robot will not move.")
@@ -125,29 +164,45 @@ def main(args: Args) -> None:
         raise ValueError("duration * hz must produce at least one step")
 
     dt = 1.0 / args.hz
-    for step in range(steps):
-        started = time.time()
-        obs = env.get_obs()
-        batch = adapter.make_batch(obs)
-        state = adapter.state_from_obs(obs)
+    try:
+        for step in range(steps):
+            started = time.time()
+            obs = env.get_obs()
+            batch = adapter.make_batch(obs)
+            state = adapter.state_from_obs(obs)
 
-        with torch.no_grad():
-            policy_action = bundle.policy.select_action(batch)
-        safe = executor.make_safe_target(policy_action, state)
+            with torch.no_grad():
+                policy_action = bundle.policy.select_action(batch)
+            safe = executor.make_safe_target(policy_action, state)
 
-        print(f"\nStep {step + 1}/{steps}")
-        print("state        :", np.round(state, 3))
-        print("policy_action:", np.round(safe.policy_action, 3))
-        print("raw_delta    :", np.round(safe.raw_delta, 3))
-        print("clipped_delta:", np.round(safe.clipped_delta, 3))
-        print("target       :", np.round(safe.target, 3))
+            print(f"\nStep {step + 1}/{steps}")
+            print("state        :", np.round(state, 3))
+            print("policy_action:", np.round(safe.policy_action, 3))
+            print("raw_delta    :", np.round(safe.raw_delta, 3))
+            print("clipped_delta:", np.round(safe.clipped_delta, 3))
+            print("target       :", np.round(safe.target, 3))
 
-        if args.execute:
-            env.step(safe.target)
+            if recorder is not None:
+                record_action = (
+                    safe.policy_action
+                    if args.lerobot_record_action == "policy_action"
+                    else safe.target
+                )
+                recorder.add_frame(obs, record_action)
+                recorded_frames += 1
 
-        remaining = dt - (time.time() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+            if args.execute:
+                env.step(safe.target)
+
+            remaining = dt - (time.time() - started)
+            if remaining > 0:
+                time.sleep(remaining)
+    finally:
+        if recorder is not None:
+            if recorded_frames > 0:
+                recorder.save_episode()
+                print(f"\nSaved LeRobot rollout episode with {recorded_frames} frames.")
+            recorder.finalize()
 
     print("\nFinished LeRobot real-robot rollout.")
 
