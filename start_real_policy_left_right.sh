@@ -17,7 +17,17 @@ echo "CKPT=$CKPT"
 test -f "$DATASET_ROOT/meta/info.json" || { echo "FEHLT: $DATASET_ROOT/meta/info.json"; exit 1; }
 test -d "$CKPT" || { echo "FEHLT: $CKPT"; exit 1; }
 
-python experiments/run_lerobot_real_robot_act.py \
+EXTRA_ARGS=()
+if [[ "${RECORD_LEROBOT:-0}" == "1" || "${RECORD_LEROBOT:-}" == "true" ]]; then
+  EXTRA_ARGS+=(
+    --record-lerobot
+    --lerobot-record-root "${LEROBOT_RECORD_ROOT:-/home/tim/lerobot_data/smolvla_left_right_rollouts}"
+    --lerobot-record-repo-id "${LEROBOT_RECORD_REPO_ID:-local/smolvla_left_right_rollouts}"
+    --lerobot-record-task "${LEROBOT_RECORD_TASK:-SmolVLA left-right policy rollout.}"
+  )
+fi
+
+python experiments/run_lerobot_real_robot.py \
   --checkpoint "$CKPT" \
   --dataset-root "$DATASET_ROOT" \
   --repo-id "$DATASET_REPO_ID" \
@@ -29,4 +39,5 @@ python experiments/run_lerobot_real_robot_act.py \
   --hz 5.0 \
   --max-joint-delta 0.05 \
   --max-gripper-delta 0.01 \
-  --execute
+  --execute \
+  "${EXTRA_ARGS[@]}"
