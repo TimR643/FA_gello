@@ -32,9 +32,10 @@ resolve_policy_path() {
   return 1
 }
 
-if ! CKPT="$(resolve_policy_path "$CKPT")"; then
+REQUESTED_CKPT="$CKPT"
+if ! CKPT="$(resolve_policy_path "$REQUESTED_CKPT")"; then
   cat >&2 <<EOF
-FEHLT: CKPT=$CKPT
+FEHLT: CKPT=$REQUESTED_CKPT
 CKPT muss auf ein LeRobot pretrained_model-Verzeichnis mit config.json zeigen.
 Beispiele:
   .../checkpoints/last/pretrained_model
@@ -46,8 +47,13 @@ EOF
 fi
 export CKPT
 
-python -m pip install -e .
-python -m pip install -e lerobot_robot_gello
+install_editable_offline() {
+  local target="$1"
+  python -m pip install --no-build-isolation --no-deps -e "$target"
+}
+
+install_editable_offline .
+install_editable_offline lerobot_robot_gello
 
 if ! command -v lerobot-rollout >/dev/null 2>&1; then
   echo "FEHLT: lerobot-rollout wurde nicht gefunden."
@@ -72,7 +78,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
-    --fps="$FPS" \pick up the lego block, and go left if the block is green, go right if the block is red
+    --fps="$FPS" \
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
