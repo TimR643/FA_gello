@@ -22,9 +22,19 @@ test -d "$CKPT" || {
   echo "FEHLT: $CKPT"
   echo
   echo "Gefundene ACT-Kandidaten:"
-  find /home/tim_st179133/lerobot_outputs -type d -path "*pretrained_model*" 2>/dev/null | grep -Ei "act|left_right|panda|sorting" || true
+  find /home/tim_st179133/lerobot_outputs -type d -path "*pretrained_model*" 2>/dev/null | rg -i "act|left_right|panda|sorting" || true
   exit 1
 }
+
+EXTRA_ARGS=()
+if [[ "${RECORD_LEROBOT:-0}" == "1" || "${RECORD_LEROBOT:-}" == "true" ]]; then
+  EXTRA_ARGS+=(
+    --record-lerobot
+    --lerobot-record-root "${LEROBOT_RECORD_ROOT:-/home/tim_st179133/lerobot_data/act_left_right_hpc_rollouts}"
+    --lerobot-record-repo-id "${LEROBOT_RECORD_REPO_ID:-local/act_left_right_hpc_rollouts}"
+    --lerobot-record-task "${LEROBOT_RECORD_TASK:-ACT left-right HPC policy rollout.}"
+  )
+fi
 
 python experiments/run_lerobot_real_robot_act.py \
   --checkpoint "$CKPT" \
@@ -38,4 +48,5 @@ python experiments/run_lerobot_real_robot_act.py \
   --hz 2.0 \
   --max-joint-delta 0.005 \
   --max-gripper-delta 0.01 \
-  --execute
+  --execute \
+  "${EXTRA_ARGS[@]}"
