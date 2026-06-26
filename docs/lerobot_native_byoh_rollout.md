@@ -39,10 +39,48 @@ ZMQ_TIMEOUT_MS=3000 \
 ```
 
 The script installs both this repository and `lerobot_robot_gello` in editable
-mode, then calls `lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
+mode with `--no-build-isolation --no-deps`, then calls
+`lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
+This avoids pip trying to download build dependencies such as `setuptools` on the
+HPC when the LeRobot environment already contains the required runtime packages.
 Use `CAMERA_NAMES`, not `--robot.cameras`: LeRobot's base `RobotConfig` already
 uses `cameras` for its own camera-config dictionary, so the GELLO plugin keeps
 the simple wrist/base selection in `camera_names` as a comma-separated string such as `wrist,base`.
+
+## Recording policy rollouts into LeRobot
+
+The same launcher can now record the policy-driven inference run directly through
+LeRobot.  Enable it with `RECORD_ROLLOUT=true` and provide a LeRobot dataset root
+and repo id:
+
+```bash
+RECORD_ROLLOUT=true \
+LEROBOT_ROOT=$HOME/lerobot_data/eval_pick_red_green_lego \
+LEROBOT_REPO_ID=local/eval_pick_red_green_lego \
+NUM_EPISODES=3 \
+DURATION=50 \
+./start_lerobot_native_real_policy.sh
+```
+
+In recording mode the script switches from the default `base` rollout strategy to
+LeRobot's `episodic` strategy.  `NUM_EPISODES` becomes
+`--dataset.num_episodes`, `DURATION` becomes `--dataset.episode_time_s`, and the
+task text is passed as `--dataset.single_task`, so observations, policy actions,
+and camera frames are written as normal LeRobot episodes while inference is
+running.  Upload is disabled by default for local experiments; set
+`LEROBOT_PUSH_TO_HUB=true` if you want LeRobot to push the resulting dataset.
+
+Useful recording overrides:
+
+```bash
+RESET_TIME_S=5                         # optional pause/reset time between episodes
+LEROBOT_RESUME=true                    # resume/add episodes to an existing dataset
+EPISODIC_RESET_TO_INITIAL_POSITION=true # ask LeRobot to reset between episodes
+STRATEGY_TYPE=episodic                 # default when RECORD_ROLLOUT=true
+```
+
+When `RECORD_ROLLOUT` is left unset or `false`, the launcher keeps the old
+behavior: it runs `NUM_EPISODES` separate non-recording `base` rollouts.
 
 ## Safety defaults
 

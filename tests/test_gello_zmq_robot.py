@@ -86,7 +86,7 @@ def test_full_policy_image_keys_are_stripped_to_robot_camera_keys():
     assert "observation.images.observation.images.wrist" not in features
 
 
-def test_send_action_forwards_safe_target_without_alpha_smoothing():
+def test_send_action_forwards_each_policy_action_without_alpha_smoothing():
     robot = GelloZMQ(
         GelloZMQConfig(
             max_joint_delta=0.5,
@@ -98,13 +98,20 @@ def test_send_action_forwards_safe_target_without_alpha_smoothing():
     robot.robot = fake_robot
     robot._last_state = np.zeros(8, dtype=np.float32)
 
-    action = np.full(8, 0.4, dtype=np.float32)
+    first_action = np.full(8, 0.4, dtype=np.float32)
+    second_action = np.full(8, -0.4, dtype=np.float32)
 
-    returned = robot.send_action(action)
-
-    np.testing.assert_array_equal(fake_robot.commanded, action)
+    first_returned = robot.send_action(first_action)
+    np.testing.assert_array_equal(fake_robot.commanded, first_action)
     np.testing.assert_array_equal(
-        np.array(list(returned.values()), dtype=np.float32), action
+        np.array(list(first_returned.values()), dtype=np.float32), first_action
+    )
+
+    second_returned = robot.send_action(second_action)
+
+    np.testing.assert_array_equal(fake_robot.commanded, second_action)
+    np.testing.assert_array_equal(
+        np.array(list(second_returned.values()), dtype=np.float32), second_action
     )
 
 
