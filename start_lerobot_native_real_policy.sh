@@ -72,7 +72,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
-    --fps="$FPS" \pick up the lego block, and go left if the block is green, go right if the block is red
+    --fps="$FPS" \
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
@@ -85,7 +85,6 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}" \
-    --robot.command_smoothing_alpha="${COMMAND_SMOOTHING_ALPHA:-1.0}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
     --task="$TASK" \
     --duration="$DURATION"

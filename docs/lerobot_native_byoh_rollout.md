@@ -136,13 +136,11 @@ features.
 
 ## Smoothness knobs
 
-If the policy chooses the right behavior but the physical motion is still too
-jerky, reduce the per-step deltas first (`MAX_JOINT_DELTA`, `MAX_GRIPPER_DELTA`).
-For additional low-pass smoothing, set `COMMAND_SMOOTHING_ALPHA` below `1.0`.
-`1.0` preserves the raw clipped target, while values such as `0.3` or `0.5` blend
-the new safe target with the previous command before sending it to ZMQ. The
-smoothed command is clipped again against the same per-step safety limits before
-it reaches the robot.
+The GELLO ZMQ plugin does not apply any low-pass or alpha smoothing to LeRobot
+policy outputs. It only clips each command to the configured per-step safety
+limits (`MAX_JOINT_DELTA`, `MAX_GRIPPER_DELTA`) before forwarding the resulting
+target to ZMQ. If the physical motion is too jerky, reduce those per-step deltas
+rather than blending policy outputs.
 
 
 ## Rollout FPS and shutdown reset
@@ -173,8 +171,8 @@ advertises the same visual feature name that the ACT policy expects:
 ```
 
 The wrapper delegates to `start_lerobot_native_real_policy.sh` after setting
-`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist`, `FPS=8`,
-conservative ACT smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.
+`CKPT`, `CAMERA_NAMES=wrist`, `POLICY_CAMERA_NAMES=wrist,base`, `FPS=8`,
+and `RETURN_TO_INITIAL_POSITION=false`.
 Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
 
