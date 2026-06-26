@@ -75,8 +75,6 @@ class DynamixelRobot(Robot):
         else:
             self._driver = FakeDynamixelDriver(joint_ids)
         self._torque_on = False
-        self._last_pos = None
-        self._alpha = 0.99
 
         if start_joints is not None:
             # loop through all joints and add +- 2pi to the joint offsets to get the closest to start joints
@@ -114,13 +112,6 @@ class DynamixelRobot(Robot):
             )
             g_pos = min(max(0, g_pos), 1)
             pos[-1] = g_pos
-
-        if self._last_pos is None:
-            self._last_pos = pos
-        else:
-            # exponential smoothing
-            pos = self._last_pos * (1 - self._alpha) + pos * self._alpha
-            self._last_pos = pos
 
         return pos
 
