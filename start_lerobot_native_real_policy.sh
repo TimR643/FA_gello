@@ -66,13 +66,16 @@ echo "FPS=$FPS"
 echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
 echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
 echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
+echo "RECORD_STREAM=${RECORD_STREAM:-false}"
+echo "RECORD_STREAM_HOST=${RECORD_STREAM_HOST:-127.0.0.1}"
+echo "RECORD_STREAM_PORT=${RECORD_STREAM_PORT:-7000}"
 
 for episode in $(seq 1 "$NUM_EPISODES"); do
   echo "Starting rollout episode $episode/$NUM_EPISODES"
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
-    --fps="$FPS" \pick up the lego block, and go left if the block is green, go right if the block is red
+    --fps="$FPS" \
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
@@ -87,6 +90,11 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}" \
     --robot.command_smoothing_alpha="${COMMAND_SMOOTHING_ALPHA:-1.0}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
+    --robot.record_stream="${RECORD_STREAM:-false}" \
+    --robot.record_stream_host="${RECORD_STREAM_HOST:-127.0.0.1}" \
+    --robot.record_stream_port="${RECORD_STREAM_PORT:-7000}" \
+    --robot.record_stream_hwm="${RECORD_STREAM_HWM:-2}" \
+    --robot.record_stream_include_camera_data="${RECORD_STREAM_INCLUDE_CAMERA_DATA:-true}" \
     --task="$TASK" \
     --duration="$DURATION"
 done

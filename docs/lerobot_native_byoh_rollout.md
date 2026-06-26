@@ -178,6 +178,47 @@ conservative ACT smoothing defaults, and `RETURN_TO_INITIAL_POSITION=false`.
 Override those environment variables before the command if a different ACT checkpoint expects a
 different camera schema.
 
+## Recording LeRobot data during native inference
+
+For native `lerobot-rollout` inference you can now stream every rollout frame to
+the existing LeRobot stream recorder.  Starting the recorder alone does not write
+frames; it only waits for ZMQ messages.  Recording begins automatically when a
+rollout launched with `RECORD_STREAM=true` connects and sends its `start` marker.
+Start the recorder first in a separate shell, then enable `RECORD_STREAM=true` on
+the rollout launcher.
+
+For the ACT wrist-only launcher, record a wrist-only dataset like this:
+
+```bash
+python experiments/record_lerobot_stream.py \
+  --port 7000 \
+  --lerobot-root ~/lerobot_data/act_rollout_recordings \
+  --lerobot-repo-id local/act_rollout_recordings \
+  --lerobot-fps 8 \
+  --cameras wrist
+```
+
+Then run inference in another shell:
+
+```bash
+RECORD_STREAM=true \
+RECORD_STREAM_HOST=127.0.0.1 \
+RECORD_STREAM_PORT=7000 \
+./start_lerobot_native_act_policy.sh
+```
+
+For the generic two-camera launcher, keep `CAMERA_NAMES=wrist,base` and pass
+`--cameras wrist base` to the recorder so the dataset feature schema matches the
+streamed camera keys.  The robot plugin sends a `start` marker when LeRobot
+connects, one `frame` message after each commanded action, and a `stop` marker on
+disconnect; the recorder then asks whether to keep or discard the episode.
+
+If the recorder runs on another machine, point `RECORD_STREAM_HOST` at that
+machine or forward port `7000` through SSH.  Leave
+`RECORD_STREAM_INCLUDE_CAMERA_DATA=true` for a trainable LeRobot video dataset;
+set it to `false` only for low-bandwidth debugging because the resulting frames
+will not contain camera observations.
+
 ## Checkpoint path layout
 
 `CKPT` must resolve to a LeRobot `pretrained_model` directory that contains
