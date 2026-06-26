@@ -110,6 +110,9 @@ class FACTRGravityCompensation:
         self.gripper_close_rad: Optional[float] = None
         # Last raw leader gripper reading in radians (before offsets/signs)
         self.leader_gripper_raw_rad: float = 0.0
+        # Teleop smoothing (match baseline non-FACTR behavior)
+        self.teleop_smoothing_alpha: float = 0.99
+        self._teleop_last_action: Optional[np.ndarray] = None
 
         try:
             self._load_config()
@@ -589,6 +592,17 @@ class FACTRGravityCompensation:
                     leader_gripper_vel,
                 ) = self.get_leader_joint_states()
                 action = self._build_follower_action(leader_arm_pos, leader_gripper_pos)
+                # Apply exponential smoothing to follower command to mirror baseline
+                if self._teleop_last_action is None or len(
+                    self._teleop_last_action
+                ) != len(action):
+                    self._teleop_last_action = action
+                else:
+                    action = (
+                        self._teleop_last_action * (1.0 - self.teleop_smoothing_alpha)
+                        + action * self.teleop_smoothing_alpha
+                    )
+                    self._teleop_last_action = action
                 self.teleop_env.step(action)
             except Exception as e:
                 print(f"Teleop loop warning: {e}")
