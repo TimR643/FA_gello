@@ -31,7 +31,6 @@ class GelloZMQConfig(RobotConfig):
     image_width: int = 640
     max_joint_delta: float = 0.015
     max_gripper_delta: float = 0.03
-    command_smoothing_alpha: float = 1.0
     action_mode: str = "absolute_joint_position"
     joint_lower: tuple[float, ...] = field(
         default_factory=lambda: (

@@ -30,7 +30,6 @@ class GelloZMQ(Robot):
         self.cameras: dict[str, ZMQClientCamera] = {}
         self._is_connected = False
         self._last_state: np.ndarray | None = None
-        self._last_command: np.ndarray | None = None
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -199,44 +198,11 @@ class GelloZMQ(Robot):
             current = np.asarray(self.robot.get_joint_state(), dtype=np.float32)
         raw_action = self._extract_action_array(action)
         safe = self.executor.make_safe_target(raw_action, current)
-        target = self._smooth_safe_target(safe.target, current)
+        target = safe.target.astype(np.float32)
         self.robot.command_joint_state(target)
-        self._last_command = target
         return {
             key: float(value) for key, value in zip(self._joint_feature_names(), target)
         }
-
-    def _smooth_safe_target(
-        self, target: np.ndarray, current: np.ndarray
-    ) -> np.ndarray:
-        alpha = float(self.config.command_smoothing_alpha)
-        if not 0 < alpha <= 1:
-            raise ValueError(
-                "command_smoothing_alpha must be in the interval (0, 1], "
-                f"got {self.config.command_smoothing_alpha}"
-            )
-        if alpha >= 1.0:
-            return target.astype(np.float32)
-
-        previous = self._last_command
-        if previous is None or previous.shape != target.shape:
-            previous = current
-        smoothed = alpha * target + (1.0 - alpha) * previous
-
-        delta = smoothed - current
-        delta[:-1] = np.clip(
-            delta[:-1],
-            -self.config.max_joint_delta,
-            self.config.max_joint_delta,
-        )
-        delta[-1] = np.clip(
-            delta[-1],
-            -self.config.max_gripper_delta,
-            self.config.max_gripper_delta,
-        )
-        lower = np.asarray(self.config.joint_lower, dtype=np.float32)
-        upper = np.asarray(self.config.joint_upper, dtype=np.float32)
-        return np.clip(current + delta, lower, upper).astype(np.float32)
 
     def _extract_action_array(self, action: dict[str, Any] | Any) -> Any:
         if not isinstance(action, Mapping):
