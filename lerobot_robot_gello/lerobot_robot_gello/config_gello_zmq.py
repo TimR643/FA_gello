@@ -32,6 +32,15 @@ class GelloZMQConfig(RobotConfig):
     max_joint_delta: float = 0.015
     max_gripper_delta: float = 0.03
     action_mode: str = "absolute_joint_position"
+    record_lerobot: bool = False
+    lerobot_root: str = "~/lerobot_data/native_policy_rollouts"
+    lerobot_repo_id: str = "local/native_policy_rollouts"
+    lerobot_fps: int = 8
+    lerobot_task: str = "Native GELLO policy rollout."
+    lerobot_robot_type: str = "panda_gello"
+    lerobot_camera_names: str = "wrist,base"
+    lerobot_streaming_encoding: bool = True
+    lerobot_batch_encoding_size: int = 1
     joint_lower: tuple[float, ...] = field(
         default_factory=lambda: (
             -2.8973,

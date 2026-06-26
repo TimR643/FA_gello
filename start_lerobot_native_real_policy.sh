@@ -19,6 +19,51 @@ export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/pick_red_green_lego/chec
 : "${FPS:=8}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 
+RECORD_LEROBOT="${RECORD_LEROBOT:-false}"
+LOG_ROLLOUT="${LOG_ROLLOUT:-false}"
+
+usage() {
+  cat <<EOF
+Usage: $0 [--record-lerobot] [--no-record-lerobot] [--log-rollout] [--no-log-rollout]
+
+Environment overrides for LeRobot recording:
+  LEROBOT_RECORD_ROOT      Dataset root (default: ~/lerobot_data/native_policy_rollouts)
+  LEROBOT_RECORD_REPO_ID   Dataset repo id (default: local/native_policy_rollouts)
+  LEROBOT_RECORD_TASK      Task stored in recorded frames (default: TASK)
+  LEROBOT_RECORD_ROBOT_TYPE Robot type metadata (default: panda_gello)
+  LEROBOT_RECORD_CAMERA_NAMES Camera keys written to dataset (default: CAMERA_NAMES/CAMERAS)
+  LEROBOT_RECORD_FPS       Dataset fps (default: FPS)
+  ROLLOUT_LOG_DIR          Log directory for --log-rollout (default: logs/rollouts)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --record-lerobot|--record|--lerobot-record)
+      RECORD_LEROBOT=true
+      ;;
+    --no-record-lerobot|--no-record|--no-lerobot-record)
+      RECORD_LEROBOT=false
+      ;;
+    --log-rollout|--logger)
+      LOG_ROLLOUT=true
+      ;;
+    --no-log-rollout|--no-logger)
+      LOG_ROLLOUT=false
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
 resolve_policy_path() {
   local candidate="$1"
   if [[ -f "$candidate/config.json" ]]; then
@@ -66,8 +111,15 @@ echo "FPS=$FPS"
 echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
 echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
 echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
+echo "RECORD_LEROBOT=$RECORD_LEROBOT"
+echo "LOG_ROLLOUT=$LOG_ROLLOUT"
+if [[ "$RECORD_LEROBOT" == "true" ]]; then
+  echo "LEROBOT_RECORD_ROOT=${LEROBOT_RECORD_ROOT:-$HOME/lerobot_data/native_policy_rollouts}"
+  echo "LEROBOT_RECORD_REPO_ID=${LEROBOT_RECORD_REPO_ID:-local/native_policy_rollouts}"
+fi
 
-for episode in $(seq 1 "$NUM_EPISODES"); do
+run_rollout_episode() {
+  local episode="$1"
   echo "Starting rollout episode $episode/$NUM_EPISODES"
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
@@ -86,6 +138,22 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
     --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}" \
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}" \
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
+    --robot.record_lerobot="$RECORD_LEROBOT" \
+    --robot.lerobot_root="${LEROBOT_RECORD_ROOT:-$HOME/lerobot_data/native_policy_rollouts}" \
+    --robot.lerobot_repo_id="${LEROBOT_RECORD_REPO_ID:-local/native_policy_rollouts}" \
+    --robot.lerobot_fps="${LEROBOT_RECORD_FPS:-$FPS}" \
+    --robot.lerobot_task="${LEROBOT_RECORD_TASK:-$TASK}" \
+    --robot.lerobot_robot_type="${LEROBOT_RECORD_ROBOT_TYPE:-panda_gello}" \
+    --robot.lerobot_camera_names="${LEROBOT_RECORD_CAMERA_NAMES:-${CAMERA_NAMES:-${CAMERAS:-wrist,base}}}" \
     --task="$TASK" \
     --duration="$DURATION"
+}
+
+for episode in $(seq 1 "$NUM_EPISODES"); do
+  if [[ "$LOG_ROLLOUT" == "true" ]]; then
+    mkdir -p "${ROLLOUT_LOG_DIR:-logs/rollouts}"
+    run_rollout_episode "$episode" 2>&1 | tee "${ROLLOUT_LOG_DIR:-logs/rollouts}/native_rollout_$(date +%Y%m%d_%H%M%S)_episode_${episode}.log"
+  else
+    run_rollout_episode "$episode"
+  fi
 done

@@ -253,3 +253,38 @@ real recording/rollout.  If you need a different rate or port:
 ```bash
 PREVIEW_FPS=1 WRIST_CAMERA_PORT=5000 ./view_wrist_camera.sh
 ```
+
+## Optional native rollout recording
+
+The native real and ACT launchers can now record the rollout directly into a
+LeRobot dataset from inside the `gello_zmq` robot plugin.  Add
+`--record-lerobot` when starting either launcher:
+
+```bash
+LEROBOT_RECORD_ROOT=~/lerobot_data/native_policy_rollouts \
+LEROBOT_RECORD_REPO_ID=local/native_policy_rollouts \
+./start_lerobot_native_real_policy.sh --record-lerobot --log-rollout
+```
+
+The same flag works for the ACT wrapper because it forwards command-line
+arguments to the shared real-policy launcher:
+
+```bash
+LEROBOT_RECORD_ROOT=~/lerobot_data/act_native_policy_rollouts \
+LEROBOT_RECORD_REPO_ID=local/act_native_policy_rollouts \
+./start_lerobot_native_act_policy.sh --record-lerobot --log-rollout
+```
+
+Useful recording overrides:
+
+- `LEROBOT_RECORD_ROOT`: local dataset root.
+- `LEROBOT_RECORD_REPO_ID`: dataset repo id.
+- `LEROBOT_RECORD_TASK`: task string stored in every frame; defaults to `TASK`.
+- `LEROBOT_RECORD_CAMERA_NAMES`: dataset camera keys; defaults to the live
+  `CAMERA_NAMES`/`CAMERAS` selection.
+- `LEROBOT_RECORD_FPS`: dataset FPS; defaults to `FPS`.
+- `--log-rollout`: also writes the rollout console output to `logs/rollouts/`.
+
+Each `lerobot-rollout` process is saved as one LeRobot episode when the robot
+plugin disconnects.  With `NUM_EPISODES>1`, the launcher starts one rollout
+process per episode and the dataset writer resumes the same dataset root.
