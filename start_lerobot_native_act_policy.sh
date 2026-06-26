@@ -16,4 +16,4 @@ export MAX_JOINT_DELTA="${MAX_JOINT_DELTA:-0.01}"
 export MAX_GRIPPER_DELTA="${MAX_GRIPPER_DELTA:-0.02}"
 export RETURN_TO_INITIAL_POSITION="${RETURN_TO_INITIAL_POSITION:-false}"
 
-exec "$(dirname "$0")/start_lerobot_native_real_policy.sh"
+exec "$(dirname "$0")/start_lerobot_native_real_policy.sh" "$@"

@@ -30,6 +30,9 @@ class GelloZMQ(Robot):
         self.cameras: dict[str, ZMQClientCamera] = {}
         self._is_connected = False
         self._last_state: np.ndarray | None = None
+        self._last_record_obs: dict[str, Any] | None = None
+        self._lerobot_writer: Any | None = None
+        self._recorded_frames = 0
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -117,6 +120,7 @@ class GelloZMQ(Robot):
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
         self._is_connected = True
+        self._start_lerobot_recording_if_enabled()
 
     def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
         socket = getattr(client, "_socket", None)
@@ -140,11 +144,47 @@ class GelloZMQ(Robot):
             ) from exc
 
     def disconnect(self) -> None:
+        self._finish_lerobot_recording()
         if self.robot is not None:
             self.robot.close()
         self.robot = None
         self.cameras = {}
         self._is_connected = False
+
+    def _start_lerobot_recording_if_enabled(self) -> None:
+        if not self.config.record_lerobot:
+            return
+        from gello.utils.control_utils import LeRobotDatasetWriter
+
+        self._lerobot_writer = LeRobotDatasetWriter(
+            root=self.config.lerobot_root,
+            repo_id=self.config.lerobot_repo_id,
+            fps=self.config.lerobot_fps,
+            task=self.config.lerobot_task,
+            robot_type=self.config.lerobot_robot_type,
+            camera_keys=self._parse_names(self.config.lerobot_camera_names),
+            streaming_encoding=self.config.lerobot_streaming_encoding,
+            batch_encoding_size=self.config.lerobot_batch_encoding_size,
+        )
+        self._recorded_frames = 0
+        print(
+            "Native LeRobot recording enabled: "
+            f"root={self.config.lerobot_root}, repo_id={self.config.lerobot_repo_id}"
+        )
+
+    def _finish_lerobot_recording(self) -> None:
+        if self._lerobot_writer is None:
+            return
+        try:
+            if self._recorded_frames > 0:
+                self._lerobot_writer.save_episode()
+                print(f"Saved native LeRobot rollout with {self._recorded_frames} frames")
+            else:
+                print("Native LeRobot recording had no frames; nothing to save")
+        finally:
+            self._lerobot_writer.finalize()
+            self._lerobot_writer = None
+            self._recorded_frames = 0
 
     def calibrate(self) -> None:
         return None
@@ -167,6 +207,7 @@ class GelloZMQ(Robot):
         obs: dict[str, Any] = {
             key: float(value) for key, value in zip(self._joint_feature_names(), state)
         }
+        record_obs: dict[str, Any] = {"joint_positions": state.copy()}
         live_camera_names = self._camera_names()
         policy_camera_names = self._policy_camera_names()
         for policy_camera_index, policy_camera in enumerate(policy_camera_names):
@@ -188,6 +229,8 @@ class GelloZMQ(Robot):
                     f"{(self.config.image_height, self.config.image_width, 3)}"
                 )
             obs[self._policy_camera_key(policy_camera)] = image
+            record_obs[f"{live_camera}_rgb"] = image
+        self._last_record_obs = record_obs
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
@@ -200,9 +243,20 @@ class GelloZMQ(Robot):
         safe = self.executor.make_safe_target(raw_action, current)
         target = safe.target.astype(np.float32)
         self.robot.command_joint_state(target)
+        self._record_lerobot_frame(target)
         return {
             key: float(value) for key, value in zip(self._joint_feature_names(), target)
         }
+
+    def _record_lerobot_frame(self, action: np.ndarray) -> None:
+        if self._lerobot_writer is None:
+            return
+        if self._last_record_obs is None:
+            raise RuntimeError(
+                "Cannot record LeRobot frame before an observation was captured"
+            )
+        self._lerobot_writer.add_frame(self._last_record_obs, action)
+        self._recorded_frames += 1
 
     def _extract_action_array(self, action: dict[str, Any] | Any) -> Any:
         if not isinstance(action, Mapping):
