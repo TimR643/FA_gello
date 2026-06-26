@@ -72,7 +72,7 @@ for episode in $(seq 1 "$NUM_EPISODES"); do
   lerobot-rollout \
     --strategy.type="${STRATEGY_TYPE:-base}" \
     --policy.path="$CKPT" \
-    --fps="$FPS" \pick up the lego block, and go left if the block is green, go right if the block is red
+    --fps="$FPS" \
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
     --robot.type=gello_zmq \
     --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
