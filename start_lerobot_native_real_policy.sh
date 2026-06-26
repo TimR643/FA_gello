@@ -51,8 +51,8 @@ EOF
 fi
 export CKPT
 
-python -m pip install -e .
-python -m pip install -e lerobot_robot_gello
+python -m pip install --no-build-isolation --no-deps -e .
+python -m pip install --no-build-isolation --no-deps -e lerobot_robot_gello
 
 if ! command -v lerobot-rollout >/dev/null 2>&1; then
   echo "FEHLT: lerobot-rollout wurde nicht gefunden."

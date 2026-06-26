@@ -39,7 +39,10 @@ ZMQ_TIMEOUT_MS=3000 \
 ```
 
 The script installs both this repository and `lerobot_robot_gello` in editable
-mode, then calls `lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
+mode with `--no-build-isolation --no-deps`, then calls
+`lerobot-rollout --strategy.type=base --robot.type=gello_zmq --policy.path=...`.
+This avoids pip trying to download build dependencies such as `setuptools` on the
+HPC when the LeRobot environment already contains the required runtime packages.
 Use `CAMERA_NAMES`, not `--robot.cameras`: LeRobot's base `RobotConfig` already
 uses `cameras` for its own camera-config dictionary, so the GELLO plugin keeps
 the simple wrist/base selection in `camera_names` as a comma-separated string such as `wrist,base`.
