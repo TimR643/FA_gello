@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import datetime
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -31,6 +32,10 @@ class GelloZMQ(Robot):
         self._is_connected = False
         self._last_state: np.ndarray | None = None
         self._last_command: np.ndarray | None = None
+        self._last_obs: dict[str, Any] | None = None
+        self._recording_publisher: Any | None = None
+        self._recording_started = False
+        self._dropped_recording_frames = 0
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -113,6 +118,7 @@ class GelloZMQ(Robot):
             else:
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
+        self._connect_recording_stream()
         self._is_connected = True
 
     def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
@@ -137,6 +143,7 @@ class GelloZMQ(Robot):
             ) from exc
 
     def disconnect(self) -> None:
+        self._close_recording_stream()
         if self.robot is not None:
             self.robot.close()
         self.robot = None
@@ -185,6 +192,7 @@ class GelloZMQ(Robot):
                     f"{(self.config.image_height, self.config.image_width, 3)}"
                 )
             obs[policy_camera] = image
+        self._last_obs = obs
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
@@ -198,9 +206,84 @@ class GelloZMQ(Robot):
         target = self._smooth_safe_target(safe.target, current)
         self.robot.command_joint_state(target)
         self._last_command = target
+        self._publish_recording_frame(target)
         return {
             key: float(value) for key, value in zip(self._joint_feature_names(), target)
         }
+
+    def _connect_recording_stream(self) -> None:
+        if not self.config.record_stream:
+            return
+        from gello.zmq_core.recording_node import ZMQRecordingPublisher
+
+        self._recording_publisher = ZMQRecordingPublisher(
+            host=self.config.record_stream_host,
+            port=self.config.record_stream_port,
+            send_hwm=self.config.record_stream_hwm,
+        )
+        self._send_recording_message(
+            {"type": "start", "timestamp": datetime.datetime.now().isoformat()}
+        )
+        self._recording_started = True
+
+    def _close_recording_stream(self) -> None:
+        if self._recording_publisher is None:
+            return
+        if self._recording_started:
+            self._send_recording_message(
+                {"type": "stop", "timestamp": datetime.datetime.now().isoformat()}
+            )
+        self._recording_publisher.close()
+        self._recording_publisher = None
+        self._recording_started = False
+
+    def _send_recording_message(self, message: dict[str, Any]) -> None:
+        if self._recording_publisher is None:
+            return
+        if (
+            not self._recording_publisher.send(message)
+            and message.get("type") == "frame"
+        ):
+            self._dropped_recording_frames += 1
+            if self._dropped_recording_frames % 100 == 1:
+                print(
+                    "Recording stream queue full; dropping rollout frames "
+                    f"(dropped={self._dropped_recording_frames})."
+                )
+
+    def _recording_obs(self) -> dict[str, Any]:
+        obs = self._last_obs or {}
+        recording_obs: dict[str, Any] = {
+            "joint_positions": np.asarray(
+                [obs[key] for key in self._joint_feature_names()], dtype=np.float32
+            )
+        }
+        if not self.config.record_stream_include_camera_data:
+            return recording_obs
+
+        live_camera_names = self._camera_names()
+        for policy_camera_index, policy_camera in enumerate(
+            self._policy_camera_names()
+        ):
+            if policy_camera_index >= len(live_camera_names):
+                continue
+            if policy_camera in obs:
+                recording_obs[f"{live_camera_names[policy_camera_index]}_rgb"] = obs[
+                    policy_camera
+                ]
+        return recording_obs
+
+    def _publish_recording_frame(self, action: np.ndarray) -> None:
+        if self._recording_publisher is None or self._last_obs is None:
+            return
+        self._send_recording_message(
+            {
+                "type": "frame",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "obs": self._recording_obs(),
+                "action": action,
+            }
+        )
 
     def _smooth_safe_target(
         self, target: np.ndarray, current: np.ndarray

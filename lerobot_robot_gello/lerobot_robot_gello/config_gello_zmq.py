@@ -33,6 +33,11 @@ class GelloZMQConfig(RobotConfig):
     max_gripper_delta: float = 0.03
     command_smoothing_alpha: float = 1.0
     action_mode: str = "absolute_joint_position"
+    record_stream: bool = False
+    record_stream_host: str = "127.0.0.1"
+    record_stream_port: int = 7000
+    record_stream_hwm: int = 2
+    record_stream_include_camera_data: bool = True
     joint_lower: tuple[float, ...] = field(
         default_factory=lambda: (
             -2.8973,
