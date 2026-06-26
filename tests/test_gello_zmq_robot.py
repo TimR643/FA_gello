@@ -36,7 +36,7 @@ from lerobot_robot_gello.config_gello_zmq import GelloZMQConfig
 from lerobot_robot_gello.gello_zmq import GelloZMQ
 
 
-def test_observation_features_use_lerobot_image_keys_for_bare_camera_names():
+def test_observation_features_use_bare_camera_keys_for_lerobot_prefixing():
     robot = GelloZMQ(
         GelloZMQConfig(
             camera_names="wrist",
@@ -46,13 +46,13 @@ def test_observation_features_use_lerobot_image_keys_for_bare_camera_names():
 
     features = robot.observation_features
 
-    assert "observation.images.wrist" in features
-    assert "observation.images.base" in features
-    assert "wrist" not in features
-    assert "base" not in features
+    assert "wrist" in features
+    assert "base" in features
+    assert "observation.images.wrist" not in features
+    assert "observation.images.base" not in features
 
 
-def test_get_observation_emits_prefixed_policy_keys_and_dummy_missing_camera():
+def test_get_observation_emits_bare_camera_keys_and_dummy_missing_camera():
     robot = GelloZMQ(
         GelloZMQConfig(
             camera_names="wrist",
@@ -68,22 +68,21 @@ def test_get_observation_emits_prefixed_policy_keys_and_dummy_missing_camera():
 
     obs = robot.get_observation()
 
-    np.testing.assert_array_equal(obs["observation.images.wrist"], wrist_image)
-    np.testing.assert_array_equal(
-        obs["observation.images.base"], np.zeros((2, 3, 3), dtype=np.uint8)
-    )
-    assert "wrist" not in obs
-    assert "base" not in obs
+    np.testing.assert_array_equal(obs["wrist"], wrist_image)
+    np.testing.assert_array_equal(obs["base"], np.zeros((2, 3, 3), dtype=np.uint8))
+    assert "observation.images.wrist" not in obs
+    assert "observation.images.base" not in obs
 
 
-def test_full_policy_image_keys_are_not_double_prefixed():
+def test_full_policy_image_keys_are_stripped_to_robot_camera_keys():
     robot = GelloZMQ(
         GelloZMQConfig(policy_camera_names="observation.images.wrist")
     )
 
     features = robot.observation_features
 
-    assert "observation.images.wrist" in features
+    assert "wrist" in features
+    assert "observation.images.wrist" not in features
     assert "observation.images.observation.images.wrist" not in features
 
 

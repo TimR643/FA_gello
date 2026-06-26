@@ -45,7 +45,7 @@ class GelloZMQ(Robot):
     def observation_features(self) -> dict[str, Any]:
         features: dict[str, Any] = self._joint_features()
         for camera in self._policy_camera_names():
-            features[self._policy_image_key(camera)] = (
+            features[self._policy_camera_key(camera)] = (
                 self.config.image_height,
                 self.config.image_width,
                 3,
@@ -69,10 +69,8 @@ class GelloZMQ(Robot):
         return self._parse_names(self.config.camera_names)
 
     @staticmethod
-    def _policy_image_key(camera: str) -> str:
-        if camera.startswith("observation.images."):
-            return camera
-        return f"observation.images.{camera}"
+    def _policy_camera_key(camera: str) -> str:
+        return camera.removeprefix("observation.images.")
 
     @staticmethod
     def _parse_names(camera_names: Any) -> tuple[str, ...]:
@@ -174,7 +172,7 @@ class GelloZMQ(Robot):
         policy_camera_names = self._policy_camera_names()
         for policy_camera_index, policy_camera in enumerate(policy_camera_names):
             if policy_camera_index >= len(live_camera_names):
-                obs[self._policy_image_key(policy_camera)] = np.zeros(
+                obs[self._policy_camera_key(policy_camera)] = np.zeros(
                     (self.config.image_height, self.config.image_width, 3),
                     dtype=np.uint8,
                 )
@@ -190,7 +188,7 @@ class GelloZMQ(Robot):
                     f"Camera {live_camera!r} returned {image.shape}; expected "
                     f"{(self.config.image_height, self.config.image_width, 3)}"
                 )
-            obs[self._policy_image_key(policy_camera)] = image
+            obs[self._policy_camera_key(policy_camera)] = image
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
