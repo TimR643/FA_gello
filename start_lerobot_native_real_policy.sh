@@ -18,6 +18,11 @@ export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/pick_red_green_lego/chec
 : "${NUM_EPISODES:=1}"
 : "${FPS:=8}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
+: "${RECORD_ROLLOUT:=false}"
+: "${LEROBOT_PUSH_TO_HUB:=false}"
+: "${LEROBOT_RESUME:=false}"
+: "${RESET_TIME_S:=0}"
+: "${EPISODIC_RESET_TO_INITIAL_POSITION:=$RETURN_TO_INITIAL_POSITION}"
 
 resolve_policy_path() {
   local candidate="$1"
@@ -66,26 +71,54 @@ echo "FPS=$FPS"
 echo "RETURN_TO_INITIAL_POSITION=$RETURN_TO_INITIAL_POSITION"
 echo "CAMERA_NAMES=${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
 echo "POLICY_CAMERA_NAMES=${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
+echo "RECORD_ROLLOUT=$RECORD_ROLLOUT"
 
-for episode in $(seq 1 "$NUM_EPISODES"); do
-  echo "Starting rollout episode $episode/$NUM_EPISODES"
+common_args=(
+  --policy.path="$CKPT"
+  --fps="$FPS"
+  --robot.type=gello_zmq
+  --robot.robot_host="${ROBOT_HOST:-127.0.0.1}"
+  --robot.robot_port="${ROBOT_PORT:-6001}"
+  --robot.camera_host="${CAMERA_HOST:-${ROBOT_HOST:-127.0.0.1}}"
+  --robot.wrist_camera_port="${WRIST_CAMERA_PORT:-5000}"
+  --robot.base_camera_port="${BASE_CAMERA_PORT:-5001}"
+  --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}"
+  --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-wrist,base}}"
+  --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}"
+  --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}"
+  --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}"
+  --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
+  --task="$TASK"
+)
+
+record_enabled="$(printf '%s' "$RECORD_ROLLOUT" | tr '[:upper:]' '[:lower:]')"
+if [[ "$record_enabled" == "1" || "$record_enabled" == "true" || "$record_enabled" == "yes" || "$record_enabled" == "on" ]]; then
+  : "${LEROBOT_REPO_ID:?Set LEROBOT_REPO_ID, for example LEROBOT_REPO_ID=local/eval_pick_red_green_lego}"
+  : "${LEROBOT_ROOT:?Set LEROBOT_ROOT to the local LeRobot dataset directory}"
+  echo "Recording rollout episodes into LeRobot dataset"
+  echo "LEROBOT_ROOT=$LEROBOT_ROOT"
+  echo "LEROBOT_REPO_ID=$LEROBOT_REPO_ID"
+  echo "LEROBOT_PUSH_TO_HUB=$LEROBOT_PUSH_TO_HUB"
+  echo "LEROBOT_RESUME=$LEROBOT_RESUME"
   lerobot-rollout \
-    --strategy.type="${STRATEGY_TYPE:-base}" \
-    --policy.path="$CKPT" \
-    --fps="$FPS" \
-    --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
-    --robot.type=gello_zmq \
-    --robot.robot_host="${ROBOT_HOST:-127.0.0.1}" \
-    --robot.robot_port="${ROBOT_PORT:-6001}" \
-    --robot.camera_host="${CAMERA_HOST:-${ROBOT_HOST:-127.0.0.1}}" \
-    --robot.wrist_camera_port="${WRIST_CAMERA_PORT:-5000}" \
-    --robot.base_camera_port="${BASE_CAMERA_PORT:-5001}" \
-    --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}" \
-    --robot.camera_names="${CAMERA_NAMES:-${CAMERAS:-wrist,base}}" \
-    --robot.policy_camera_names="${POLICY_CAMERA_NAMES:-camera1,camera2,camera3}" \
-    --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}" \
-    --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}" \
-    --robot.action_mode="${ACTION_MODE:-absolute_joint_position}" \
-    --task="$TASK" \
-    --duration="$DURATION"
-done
+    "${common_args[@]}" \
+    --strategy.type="${STRATEGY_TYPE:-episodic}" \
+    --strategy.reset_to_initial_position="$EPISODIC_RESET_TO_INITIAL_POSITION" \
+    --dataset.root="$LEROBOT_ROOT" \
+    --dataset.repo_id="$LEROBOT_REPO_ID" \
+    --dataset.single_task="$TASK" \
+    --dataset.num_episodes="$NUM_EPISODES" \
+    --dataset.episode_time_s="$DURATION" \
+    --dataset.reset_time_s="$RESET_TIME_S" \
+    --dataset.push_to_hub="$LEROBOT_PUSH_TO_HUB" \
+    --resume="$LEROBOT_RESUME"
+else
+  for episode in $(seq 1 "$NUM_EPISODES"); do
+    echo "Starting rollout episode $episode/$NUM_EPISODES"
+    lerobot-rollout \
+      "${common_args[@]}" \
+      --strategy.type="${STRATEGY_TYPE:-base}" \
+      --return_to_initial_position="$RETURN_TO_INITIAL_POSITION" \
+      --duration="$DURATION"
+  done
+fi
