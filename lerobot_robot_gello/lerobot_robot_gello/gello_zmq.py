@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import csv
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -31,6 +34,12 @@ class GelloZMQ(Robot):
         self._is_connected = False
         self._last_state: np.ndarray | None = None
         self._action_count = 0
+        self._joint_log_file: Any | None = None
+        self._joint_log_writer: csv.writer | None = None
+        self._joint_log_path: Path | None = None
+        self._joint_log_step = 0
+        self._last_joint_log_time_s: float | None = None
+        self._last_joint_log_state: np.ndarray | None = None
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -113,6 +122,7 @@ class GelloZMQ(Robot):
             else:
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
+        self._open_joint_inference_log()
         self._is_connected = True
 
     def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
@@ -137,11 +147,73 @@ class GelloZMQ(Robot):
             ) from exc
 
     def disconnect(self) -> None:
+        self._close_joint_inference_log()
         if self.robot is not None:
             self.robot.close()
         self.robot = None
         self.cameras = {}
         self._is_connected = False
+
+    def _open_joint_inference_log(self) -> None:
+        if not self.config.joint_inference_log_enabled:
+            return
+        log_dir = Path(self.config.joint_inference_log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        self._joint_log_path = log_dir / f"inference_joints_{run_timestamp}.csv"
+        self._joint_log_file = self._joint_log_path.open(
+            "w", newline="", encoding="utf-8"
+        )
+        self._joint_log_writer = csv.writer(self._joint_log_file)
+        header = ["step", "timestamp_utc", "time_s"]
+        header.extend(
+            f"joint_{index}_position_rad" for index in range(self.config.num_dofs)
+        )
+        header.extend(
+            f"joint_{index}_velocity_rad_s" for index in range(self.config.num_dofs)
+        )
+        self._joint_log_writer.writerow(header)
+        self._joint_log_file.flush()
+        print(f"[gello_zmq] Writing inference joint log to {self._joint_log_path}")
+
+    def _close_joint_inference_log(self) -> None:
+        if self._joint_log_file is not None:
+            self._joint_log_file.close()
+        self._joint_log_file = None
+        self._joint_log_writer = None
+        self._joint_log_path = None
+        self._joint_log_step = 0
+        self._last_joint_log_time_s = None
+        self._last_joint_log_state = None
+
+    def _estimate_joint_velocities(self, state: np.ndarray) -> np.ndarray:
+        now_s = datetime.now(timezone.utc).timestamp()
+        if self._last_joint_log_time_s is None or self._last_joint_log_state is None:
+            return np.zeros_like(state, dtype=np.float32)
+        dt_s = now_s - self._last_joint_log_time_s
+        if dt_s <= 0.0:
+            return np.zeros_like(state, dtype=np.float32)
+        return ((state - self._last_joint_log_state) / dt_s).astype(np.float32)
+
+    def _write_joint_inference_log(
+        self, state: np.ndarray, velocities: np.ndarray
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        now_s = now.timestamp()
+        if self._joint_log_writer is not None and self._joint_log_file is not None:
+            self._joint_log_writer.writerow(
+                [
+                    self._joint_log_step,
+                    now.isoformat(),
+                    f"{now_s:.9f}",
+                    *(f"{float(value):.9f}" for value in state),
+                    *(f"{float(value):.9f}" for value in velocities),
+                ]
+            )
+            self._joint_log_file.flush()
+        self._joint_log_step += 1
+        self._last_joint_log_time_s = now_s
+        self._last_joint_log_state = state.copy()
 
     def calibrate(self) -> None:
         return None
@@ -160,7 +232,15 @@ class GelloZMQ(Robot):
             raise ValueError(
                 f"Expected state shape {(self.config.num_dofs,)}, got {state.shape}"
             )
+        velocities = raw.get("joint_velocities")
+        if velocities is None:
+            velocities = self._estimate_joint_velocities(state)
+        else:
+            velocities = np.asarray(velocities, dtype=np.float32)
+            if velocities.shape != (self.config.num_dofs,):
+                velocities = self._estimate_joint_velocities(state)
         self._last_state = state
+        self._write_joint_inference_log(state, velocities)
         obs: dict[str, Any] = {
             key: float(value) for key, value in zip(self._joint_feature_names(), state)
         }
