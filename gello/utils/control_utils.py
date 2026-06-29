@@ -424,13 +424,23 @@ class RecordingStreamInterface:
         )
 
     def _send(self, message: Dict[str, Any]) -> None:
-        if not self.publisher.send(message) and message.get("type") == "frame":
+        message_type = message.get("type")
+        reliable = message_type in {"start", "stop", "quit"}
+        sent = self.publisher.send(message, block=reliable, timeout_s=2.0)
+        if sent:
+            return
+        if message_type == "frame":
             self._dropped_frames += 1
             if self._dropped_frames % 100 == 1:
                 print(
                     "Recording stream queue full; dropping frames to keep robot "
                     f"control real-time safe (dropped={self._dropped_frames})."
                 )
+        else:
+            print(
+                "WARNING: failed to send recording stream control message "
+                f"{message_type!r}; check the HPC recorder connection."
+            )
 
     def _stream_obs(self, obs: Dict[str, Any]) -> Dict[str, Any]:
         if self.include_camera_data:

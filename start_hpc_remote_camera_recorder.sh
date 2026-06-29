@@ -23,6 +23,7 @@ LEROBOT_FPS="${LEROBOT_FPS:-20}"
 LEROBOT_TASK="${LEROBOT_TASK:-pick up the lego block, and go left if the block is green, go right if the block is red}"
 LEROBOT_ROBOT_TYPE="${LEROBOT_ROBOT_TYPE:-panda_gello}"
 LEROBOT_BATCH_ENCODING_SIZE="${LEROBOT_BATCH_ENCODING_SIZE:-1}"
+CAMERA_TIMEOUT_MS="${CAMERA_TIMEOUT_MS:-3000}"
 
 cat <<EOF
 Starting HPC remote-camera recorder
@@ -30,6 +31,7 @@ Starting HPC remote-camera recorder
   Bind:              $BIND_HOSTNAME:$RECORD_STREAM_PORT
   Laptop camera host:$HPC_CAMERA_HOST
   Wrist/Base ports:  $WRIST_PORT / $BASE_PORT
+  Camera timeout:    ${CAMERA_TIMEOUT_MS} ms
   Dataset root:      $LEROBOT_ROOT
   Repo id:           $LEROBOT_REPO_ID
   FPS:               $LEROBOT_FPS
@@ -53,4 +55,5 @@ python experiments/record_lerobot_stream_with_remote_cameras.py \
   --lerobot-robot-type "$LEROBOT_ROBOT_TYPE" \
   --cameras wrist base \
   --lerobot-streaming-encoding \
-  --lerobot-batch-encoding-size "$LEROBOT_BATCH_ENCODING_SIZE"
+  --lerobot-batch-encoding-size "$LEROBOT_BATCH_ENCODING_SIZE" \
+  --camera-timeout-ms "$CAMERA_TIMEOUT_MS"
