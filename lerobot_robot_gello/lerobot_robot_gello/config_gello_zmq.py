@@ -32,6 +32,8 @@ class GelloZMQConfig(RobotConfig):
     max_joint_delta: float = 0.015
     max_gripper_delta: float = 0.03
     log_action_diagnostics_every_n: int = 10
+    joint_inference_log_dir: str = "logs/inference_joint_logs"
+    joint_inference_log_enabled: bool = True
     joint_limit_margin: float = 0.02
     action_mode: str = "absolute_joint_position"
     joint_lower: tuple[float, ...] = field(

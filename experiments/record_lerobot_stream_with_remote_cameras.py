@@ -15,10 +15,14 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 import tyro
+import zmq
 
 from gello.utils.control_utils import LeRobotDatasetWriter, confirm_episode_keep
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.recording_node import ZMQRecordingReceiver
+
+IMAGE_SIZE = (640, 480)
+IMAGE_SHAPE = (480, 640, 3)
 
 
 @dataclass
@@ -38,24 +42,47 @@ class Args:
     lerobot_robot_type: str = "panda_gello"
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
+    camera_timeout_ms: int = 3000
+
+
+def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
+    socket = getattr(camera, "_socket", None)
+    if socket is None:
+        raise AttributeError("ZMQClientCamera has no _socket attribute")
+    socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    socket.setsockopt(zmq.LINGER, 0)
+
+
+def _close_camera_client(client: ZMQClientCamera) -> None:
+    client._socket.close()
+    client._context.term()
+
+
+def _close_camera_clients(camera_clients: Dict[str, ZMQClientCamera]) -> None:
+    for client in camera_clients.values():
+        _close_camera_client(client)
+
+
+def _make_camera_client(args: Args, camera: str) -> ZMQClientCamera:
+    if camera == "wrist":
+        client = ZMQClientCamera(
+            port=args.wrist_camera_port, host=args.camera_hostname
+        )
+    elif camera == "base":
+        client = ZMQClientCamera(
+            port=args.base_camera_port, host=args.camera_hostname
+        )
+    else:
+        raise ValueError(
+            f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
+        )
+    _configure_camera_timeout(client, args.camera_timeout_ms)
+    return client
 
 
 def _make_camera_clients(args: Args) -> Dict[str, ZMQClientCamera]:
-    clients: Dict[str, ZMQClientCamera] = {}
-    for camera in args.cameras:
-        if camera == "wrist":
-            clients[camera] = ZMQClientCamera(
-                port=args.wrist_camera_port, host=args.camera_hostname
-            )
-        elif camera == "base":
-            clients[camera] = ZMQClientCamera(
-                port=args.base_camera_port, host=args.camera_hostname
-            )
-        else:
-            raise ValueError(
-                f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
-            )
-    return clients
+    return {camera: _make_camera_client(args, camera) for camera in args.cameras}
 
 
 def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
@@ -78,12 +105,39 @@ def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     return kept
 
 
+def _fallback_camera_frame(
+    camera: str, last_images: Dict[str, np.ndarray]
+) -> np.ndarray:
+    if camera in last_images:
+        return last_images[camera].copy()
+    return np.zeros(IMAGE_SHAPE, dtype=np.uint8)
+
+
 def _attach_remote_camera_frames(
-    obs: Dict[str, Any], camera_clients: Dict[str, ZMQClientCamera]
+    obs: Dict[str, Any],
+    camera_clients: Dict[str, ZMQClientCamera],
+    last_images: Dict[str, np.ndarray],
+    args: Args,
 ) -> Dict[str, Any]:
-    for camera, client in camera_clients.items():
-        image, _depth = client.read()
-        obs[f"{camera}_rgb"] = np.asarray(image, dtype=np.uint8)
+    for camera, client in list(camera_clients.items()):
+        try:
+            image, _depth = client.read(IMAGE_SIZE)
+            image = np.asarray(image, dtype=np.uint8)
+            if image.shape != IMAGE_SHAPE:
+                raise ValueError(
+                    f"Camera {camera!r} returned {image.shape}; expected {IMAGE_SHAPE}"
+                )
+            last_images[camera] = image
+        except (zmq.ZMQError, ValueError) as exc:
+            print(
+                f"WARNING: remote camera {camera!r} read failed; using "
+                f"{'last frame' if camera in last_images else 'black placeholder'} "
+                f"and reconnecting camera: {exc}"
+            )
+            _close_camera_client(client)
+            camera_clients[camera] = _make_camera_client(args, camera)
+            image = _fallback_camera_frame(camera, last_images)
+        obs[f"{camera}_rgb"] = image
     return obs
 
 
@@ -102,6 +156,7 @@ def main(args: Args) -> None:
     )
     recording = False
     frame_count = 0
+    last_images: Dict[str, np.ndarray] = {}
 
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
@@ -128,7 +183,9 @@ def main(args: Args) -> None:
                     )
 
                 obs = _copy_robot_obs(message["obs"])
-                obs = _attach_remote_camera_frames(obs, camera_clients)
+                obs = _attach_remote_camera_frames(
+                    obs, camera_clients, last_images, args
+                )
                 writer.add_frame(obs, message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -155,6 +212,7 @@ def main(args: Args) -> None:
                 print(f"Ignoring recording stream message: {message_type}")
     finally:
         writer.finalize()
+        _close_camera_clients(camera_clients)
         receiver.close()
         print("LeRobot remote-camera stream recorder finalized")
 

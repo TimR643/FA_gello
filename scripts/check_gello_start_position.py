@@ -21,12 +21,8 @@ def _parse_floats(text: str) -> tuple[float, ...]:
 
 
 def _target_from_args(args: argparse.Namespace) -> np.ndarray:
-    if args.target_rad and args.target_deg:
-        raise ValueError("Use only one of --target-rad or --target-deg")
     if args.target_rad:
         arm = np.asarray(_parse_floats(args.target_rad), dtype=np.float32)
-    elif args.target_deg:
-        arm = np.deg2rad(np.asarray(_parse_floats(args.target_deg), dtype=np.float32))
     else:
         arm = np.asarray(DEFAULT_START_RAD, dtype=np.float32)
     if arm.shape != (7,):
@@ -45,9 +41,14 @@ def _configure_timeout(robot: ZMQClientRobot, timeout_ms: int) -> None:
     socket.setsockopt(zmq.LINGER, 0)
 
 
-def _format_row(name: str, current: float, target: float, error: float, tolerance: float) -> str:
+def _format_row(
+    name: str, current: float, target: float, error: float, tolerance: float
+) -> str:
     status = "OK " if error <= tolerance else "BAD"
-    return f"{status} {name:>8s}: current={current:+.4f} target={target:+.4f} error={error:.4f} tol={tolerance:.4f}"
+    return (
+        f"{status} {name:>8s}: current={current:+.4f} "
+        f"target={target:+.4f} error={error:.4f} tol={tolerance:.4f}"
+    )
 
 
 def _check_once(
@@ -76,7 +77,10 @@ def _check_once(
             robot.close()
 
     if current.shape[0] < target.shape[0]:
-        raise ValueError(f"Robot returned {current.shape[0]} joints, target needs {target.shape[0]}")
+        raise ValueError(
+            f"Robot returned {current.shape[0]} joints, "
+            f"target needs {target.shape[0]}"
+        )
     current = current[: target.shape[0]]
     errors = np.abs(current - target)
     tolerances = np.full(target.shape, args.arm_tolerance_rad, dtype=np.float32)
@@ -88,17 +92,29 @@ def _check_once(
         zip(current, target, errors, tolerances)
     ):
         name = f"joint_{index}" if index < 7 else "gripper"
-        print(_format_row(name, float(current_value), float(target_value), float(error), float(tolerance)))
+        print(
+            _format_row(
+                name,
+                float(current_value),
+                float(target_value),
+                float(error),
+                float(tolerance),
+            )
+        )
 
     max_arm_error = float(errors[:7].max())
     gripper_ok = True if target.shape[0] == 7 else bool(errors[-1] <= tolerances[-1])
     arm_ok = bool(np.all(errors[:7] <= tolerances[:7]))
     ok = arm_ok and gripper_ok
     print()
-    print(f"Max arm error: {max_arm_error:.4f} rad ({np.rad2deg(max_arm_error):.2f} deg)")
+    print(f"Max arm error: {max_arm_error:.4f} rad")
     if target.shape[0] == 8:
         print(f"Gripper error: {float(errors[-1]):.4f}")
-    print("PASS: start pose is within tolerance" if ok else "FAIL: move robot/GELLO to the start pose")
+    print(
+        "PASS: start pose is within tolerance"
+        if ok
+        else "FAIL: move robot/GELLO to the start pose"
+    )
     return ok
 
 
@@ -108,14 +124,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-port", type=int, default=6001)
     parser.add_argument("--timeout-ms", type=int, default=3000)
     parser.add_argument(
-        "--target-deg",
-        default=None,
-        help="Comma-separated 7-DoF arm target in degrees",
-    )
-    parser.add_argument(
         "--target-rad",
         default=None,
-        help="Comma-separated 7-DoF arm target in radians. Default: 0.0905,0,0,-2.2131,2.1220,-0.9493,0.8868",
+        help=(
+            "Comma-separated 7-DoF arm target in radians. "
+            "Default: 0.0905,0,0,-2.2131,2.1220,-0.9493,0.8868"
+        ),
     )
     parser.add_argument("--target-gripper", type=float, default=DEFAULT_GRIPPER_OPEN)
     parser.add_argument("--arm-tolerance-rad", type=float, default=0.035)
