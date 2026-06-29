@@ -15,6 +15,7 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 import tyro
+import zmq
 
 from gello.utils.control_utils import LeRobotDatasetWriter, confirm_episode_keep
 from gello.zmq_core.camera_node import ZMQClientCamera
@@ -38,6 +39,22 @@ class Args:
     lerobot_robot_type: str = "panda_gello"
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
+    camera_timeout_ms: int = 3000
+
+
+def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
+    socket = getattr(camera, "_socket", None)
+    if socket is None:
+        raise AttributeError("ZMQClientCamera has no _socket attribute")
+    socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    socket.setsockopt(zmq.LINGER, 0)
+
+
+def _close_camera_clients(camera_clients: Dict[str, ZMQClientCamera]) -> None:
+    for client in camera_clients.values():
+        client._socket.close()
+        client._context.term()
 
 
 def _make_camera_clients(args: Args) -> Dict[str, ZMQClientCamera]:
@@ -47,10 +64,12 @@ def _make_camera_clients(args: Args) -> Dict[str, ZMQClientCamera]:
             clients[camera] = ZMQClientCamera(
                 port=args.wrist_camera_port, host=args.camera_hostname
             )
+            _configure_camera_timeout(clients[camera], args.camera_timeout_ms)
         elif camera == "base":
             clients[camera] = ZMQClientCamera(
                 port=args.base_camera_port, host=args.camera_hostname
             )
+            _configure_camera_timeout(clients[camera], args.camera_timeout_ms)
         else:
             raise ValueError(
                 f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
@@ -128,7 +147,16 @@ def main(args: Args) -> None:
                     )
 
                 obs = _copy_robot_obs(message["obs"])
-                obs = _attach_remote_camera_frames(obs, camera_clients)
+                try:
+                    obs = _attach_remote_camera_frames(obs, camera_clients)
+                except zmq.ZMQError as exc:
+                    print(
+                        "WARNING: remote camera read failed; skipping this frame "
+                        f"and reconnecting cameras: {exc}"
+                    )
+                    _close_camera_clients(camera_clients)
+                    camera_clients = _make_camera_clients(args)
+                    continue
                 writer.add_frame(obs, message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -155,6 +183,7 @@ def main(args: Args) -> None:
                 print(f"Ignoring recording stream message: {message_type}")
     finally:
         writer.finalize()
+        _close_camera_clients(camera_clients)
         receiver.close()
         print("LeRobot remote-camera stream recorder finalized")
 

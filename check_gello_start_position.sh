@@ -10,10 +10,7 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-TARGET_ARGS=(--target-deg "${START_JOINTS_DEG:-5.185,-8.98,-7.0187,-133.98,-5.02,124.09,-44.24}")
-if [[ -n "${START_JOINTS_RAD:-}" ]]; then
-  TARGET_ARGS=(--target-rad "$START_JOINTS_RAD")
-fi
+TARGET_ARGS=(--target-rad "${START_JOINTS_RAD:-0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1024,-0.7830}")
 
 python scripts/check_gello_start_position.py \
   --robot-host "${ROBOT_HOST:-127.0.0.1}" \
