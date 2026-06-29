@@ -414,13 +414,14 @@ class RecordingStreamInterface:
         self.publisher = ZMQRecordingPublisher(host=host, port=port, send_hwm=send_hwm)
         self.include_camera_data = include_camera_data
         self._recording = False
+        self._frame_count = 0
         self._dropped_frames = 0
 
         print("Recording stream interface enabled. Use keyboard controls:")
         print("  S: Start streaming frames to the HPC recorder")
         print(
             "  Q: Stop current episode; "
-            "confirm on recorder with RIGHT=save or LEFT=discard"
+            "confirm here with RIGHT=save or LEFT=discard"
         )
 
     def _send(self, message: Dict[str, Any]) -> None:
@@ -451,7 +452,10 @@ class RecordingStreamInterface:
         state = self.kb_interface.update()
         if state == "start":
             self._recording = True
-            self._send({"type": "start", "timestamp": datetime.datetime.now().isoformat()})
+            self._send(
+                {"type": "start", "timestamp": datetime.datetime.now().isoformat()}
+            )
+            self._frame_count = 0
             print("Started streaming recording episode")
         elif state == "save" and self._recording:
             self._send(
@@ -462,18 +466,42 @@ class RecordingStreamInterface:
                     "action": action,
                 }
             )
+            self._frame_count += 1
         elif state == "normal" and self._recording:
-            self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+            keep = confirm_episode_keep(frame_count=self._frame_count)
+            self._send(
+                {
+                    "type": "stop",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "keep": keep,
+                }
+            )
             self._recording = False
-            print("Stopped streaming recording episode")
+            self._frame_count = 0
+            print(
+                "Requested streamed episode save"
+                if keep
+                else "Requested streamed episode discard"
+            )
         elif state == "quit":
             if self._recording:
-                self._send({"type": "stop", "timestamp": datetime.datetime.now().isoformat()})
+                keep = confirm_episode_keep(frame_count=self._frame_count)
+                self._send(
+                    {
+                        "type": "stop",
+                        "timestamp": datetime.datetime.now().isoformat(),
+                        "keep": keep,
+                    }
+                )
                 self._recording = False
-            self._send({"type": "quit", "timestamp": datetime.datetime.now().isoformat()})
+                self._frame_count = 0
+            self._send(
+                {"type": "quit", "timestamp": datetime.datetime.now().isoformat()}
+            )
             print("\nExiting.")
             return "quit"
         return None
+
 
 def run_control_loop(
     env: RobotEnv,
