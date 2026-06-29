@@ -1,3 +1,4 @@
+import time
 from typing import Any, Dict, Optional
 
 import zmq
@@ -24,12 +25,23 @@ class ZMQRecordingPublisher:
         self._socket.connect(self._addr)
         print(f"Recording stream publisher connecting to {self._addr}")
 
-    def send(self, message: Dict[str, Any]) -> bool:
-        try:
-            self._socket.send(dumps_message(message), flags=zmq.NOBLOCK)
-            return True
-        except zmq.Again:
-            return False
+    def send(
+        self,
+        message: Dict[str, Any],
+        *,
+        block: bool = False,
+        timeout_s: float = 2.0,
+    ) -> bool:
+        payload = dumps_message(message)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                self._socket.send(payload, flags=zmq.NOBLOCK)
+                return True
+            except zmq.Again:
+                if not block or time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.01)
 
     def close(self) -> None:
         self._socket.close()
