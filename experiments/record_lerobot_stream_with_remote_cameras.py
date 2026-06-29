@@ -87,17 +87,6 @@ def _attach_remote_camera_frames(
     return obs
 
 
-def _message_keep_decision(message: Dict[str, Any], frame_count: int) -> bool:
-    if "keep" in message:
-        keep = bool(message["keep"])
-        print(
-            "Using keep/discard decision sent by the control laptop: "
-            f"{'keep' if keep else 'discard'}"
-        )
-        return keep
-    return confirm_episode_keep(frame_count)
-
-
 def main(args: Args) -> None:
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
     camera_clients = _make_camera_clients(args)
@@ -117,10 +106,6 @@ def main(args: Args) -> None:
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
     print("Remote cameras:", args.cameras)
-    print(
-        "Start/stop episodes in the laptop control terminal. "
-        "The laptop now sends the RIGHT/LEFT keep/discard decision to this recorder."
-    )
 
     try:
         while True:
@@ -149,7 +134,7 @@ def main(args: Args) -> None:
                 if frame_count % 100 == 0:
                     print(f"Recorded {frame_count} streamed frames")
             elif message_type == "stop" and recording:
-                if _message_keep_decision(message, frame_count):
+                if confirm_episode_keep(frame_count):
                     writer.save_episode()
                     print(f"Saved streamed episode with {frame_count} frames")
                 else:
@@ -159,7 +144,7 @@ def main(args: Args) -> None:
                 frame_count = 0
             elif message_type == "quit":
                 if recording:
-                    if _message_keep_decision(message, frame_count):
+                    if confirm_episode_keep(frame_count):
                         writer.save_episode()
                         print(f"Saved streamed episode with {frame_count} frames")
                     else:
