@@ -53,6 +53,8 @@ Robot/ZMQ:
   BASE_CAMERA_PORT             default: 5001
   CAMERA_NAMES                 Live GELLO cameras, default inferred from checkpoint then wrist,base
   POLICY_CAMERA_NAMES          Policy image names, default inferred from checkpoint
+  ZERO_MISSING_CAMERA_ON_TIMEOUT
+                               Use zero images when a configured live camera times out (default: true)
 
 Example:
   LEROBOT_RECORD_ROOT=/home/tim_st179133/lerobot_inferences/go_left_right_even_10eps \\
@@ -211,6 +213,7 @@ POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 RECORD_LEROBOT=$RECORD_LEROBOT
 LOG_ROLLOUT=$LOG_ROLLOUT
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
+ZERO_MISSING_CAMERA_ON_TIMEOUT=${ZERO_MISSING_CAMERA_ON_TIMEOUT:-true}
 EOF_CONFIG
 
 if [[ "$RECORD_LEROBOT" == "true" ]]; then
@@ -252,6 +255,8 @@ run_rollout_episode() {
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
     --robot.joint_inference_log_dir="${JOINT_INFERENCE_LOG_DIR:-logs/inference_joint_logs}"
     --robot.joint_inference_log_enabled="${JOINT_INFERENCE_LOG_ENABLED:-true}"
+    --robot.zero_missing_camera_on_timeout="${ZERO_MISSING_CAMERA_ON_TIMEOUT:-true}"
+    --robot.max_camera_timeout_warnings="${MAX_CAMERA_TIMEOUT_WARNINGS:-3}"
     --task="$TASK"
     --duration="$DURATION"
   )

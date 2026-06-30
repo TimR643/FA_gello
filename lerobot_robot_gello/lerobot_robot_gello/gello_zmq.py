@@ -40,6 +40,7 @@ class GelloZMQ(Robot):
         self._joint_log_step = 0
         self._last_joint_log_time_s: float | None = None
         self._last_joint_log_state: np.ndarray | None = None
+        self._camera_timeout_warnings: dict[str, int] = {}
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -219,6 +220,40 @@ class GelloZMQ(Robot):
         self._last_joint_log_time_s = now_s
         self._last_joint_log_state = state.copy()
 
+    def _zero_image(self) -> np.ndarray:
+        return np.zeros(
+            (self.config.image_height, self.config.image_width, 3),
+            dtype=np.uint8,
+        )
+
+    def _read_camera_image(self, live_camera: str, policy_camera: str) -> np.ndarray:
+        client = self.cameras[live_camera]
+        try:
+            rgb, _depth = client.read(
+                (self.config.image_width, self.config.image_height)
+            )
+        except zmq.Again:
+            if not self.config.zero_missing_camera_on_timeout:
+                raise
+            warning_count = self._camera_timeout_warnings.get(live_camera, 0)
+            if warning_count < self.config.max_camera_timeout_warnings:
+                print(
+                    "[gello_zmq] Camera "
+                    f"{live_camera!r} timed out while filling policy camera "
+                    f"{policy_camera!r}; using a zero image. Check that the "
+                    "matching ZMQ camera server is running if this camera should "
+                    "be live."
+                )
+            self._camera_timeout_warnings[live_camera] = warning_count + 1
+            return self._zero_image()
+        image = np.asarray(rgb)
+        if image.shape != (self.config.image_height, self.config.image_width, 3):
+            raise ValueError(
+                f"Camera {live_camera!r} returned {image.shape}; expected "
+                f"{(self.config.image_height, self.config.image_width, 3)}"
+            )
+        return image
+
     def calibrate(self) -> None:
         return None
 
@@ -252,33 +287,17 @@ class GelloZMQ(Robot):
         policy_camera_names = self._policy_camera_names()
         for policy_camera_index, policy_camera in enumerate(policy_camera_names):
             if policy_camera.startswith("empty_camera"):
-                obs[policy_camera] = np.zeros(
-                    (self.config.image_height, self.config.image_width, 3),
-                    dtype=np.uint8,
-                )
+                obs[policy_camera] = self._zero_image()
                 continue
             live_camera_index = sum(
                 not name.startswith("empty_camera")
                 for name in policy_camera_names[:policy_camera_index]
             )
             if live_camera_index >= len(live_camera_names):
-                obs[policy_camera] = np.zeros(
-                    (self.config.image_height, self.config.image_width, 3),
-                    dtype=np.uint8,
-                )
+                obs[policy_camera] = self._zero_image()
                 continue
             live_camera = live_camera_names[live_camera_index]
-            client = self.cameras[live_camera]
-            rgb, _depth = client.read(
-                (self.config.image_width, self.config.image_height)
-            )
-            image = np.asarray(rgb)
-            if image.shape != (self.config.image_height, self.config.image_width, 3):
-                raise ValueError(
-                    f"Camera {live_camera!r} returned {image.shape}; expected "
-                    f"{(self.config.image_height, self.config.image_width, 3)}"
-                )
-            obs[policy_camera] = image
+            obs[policy_camera] = self._read_camera_image(live_camera, policy_camera)
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
