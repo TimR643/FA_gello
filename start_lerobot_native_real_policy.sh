@@ -55,21 +55,25 @@ Robot/ZMQ:
   POLICY_CAMERA_NAMES          Policy image names, default inferred from checkpoint
 
 Example:
-  LEROBOT_RECORD_ROOT=/home/tim_st179133/lerobot_inferences/go_left_right_even_10eps \
-  LEROBOT_RECORD_REPO_ID=local/go_left_right_even_10eps \
-  ROLLOUT_LOG_DIR=/home/tim_st179133/logs/go_left_right_even_10eps \
+  LEROBOT_RECORD_ROOT=/home/tim_st179133/lerobot_inferences/go_left_right_even_10eps \\
+  LEROBOT_RECORD_REPO_ID=local/go_left_right_even_10eps \\
+  ROLLOUT_LOG_DIR=/home/tim_st179133/logs/go_left_right_even_10eps \\
   $0 --record-lerobot --log-rollout
 EOF_USAGE
 }
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
+  # Defensive cleanup for copy/paste accidents in terminals (for example a
+  # trailing Ctrl-C byte after "--log-rollout"). Without this, the usage text can
+  # claim that an otherwise supported argument is unknown.
+  arg="$(printf '%s' "$1" | tr -d '[:cntrl:]')"
+  case "$arg" in
     --record-lerobot|--record|--lerobot-record) RECORD_LEROBOT=true ;;
     --no-record-lerobot|--no-record|--no-lerobot-record) RECORD_LEROBOT=false ;;
     --log-rollout|--logger) LOG_ROLLOUT=true ;;
     --no-log-rollout|--no-logger) LOG_ROLLOUT=false ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    *) printf 'Unknown argument: %q\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
