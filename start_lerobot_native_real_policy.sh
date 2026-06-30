@@ -53,6 +53,8 @@ Robot/ZMQ:
   BASE_CAMERA_PORT             default: 5001
   CAMERA_NAMES                 Live GELLO cameras, default inferred from checkpoint then wrist,base
   POLICY_CAMERA_NAMES          Policy image names, default inferred from checkpoint
+  MAX_JOINT_DELTA              Max joint step per policy action in rad (default: 0.015)
+  MAX_GRIPPER_DELTA            Max gripper step per policy action (default: 0.03)
   ZERO_MISSING_CAMERA_ON_TIMEOUT
                                Use zero images when a configured live camera times out (default: true)
 
@@ -213,6 +215,8 @@ POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 RECORD_LEROBOT=$RECORD_LEROBOT
 LOG_ROLLOUT=$LOG_ROLLOUT
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
+MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.015}
+MAX_GRIPPER_DELTA=${MAX_GRIPPER_DELTA:-0.03}
 ZERO_MISSING_CAMERA_ON_TIMEOUT=${ZERO_MISSING_CAMERA_ON_TIMEOUT:-true}
 EOF_CONFIG
 
@@ -250,8 +254,8 @@ run_rollout_episode() {
     --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}"
     --robot.camera_names="$CAMERA_NAMES_RESOLVED"
     --robot.policy_camera_names="$POLICY_CAMERA_NAMES_RESOLVED"
-    --robot.max_joint_delta="${MAX_JOINT_DELTA:-1.0}"
-    --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}"
+    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.015}"
+    --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-0.03}"
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
     --robot.joint_inference_log_dir="${JOINT_INFERENCE_LOG_DIR:-logs/inference_joint_logs}"
     --robot.joint_inference_log_enabled="${JOINT_INFERENCE_LOG_ENABLED:-true}"
