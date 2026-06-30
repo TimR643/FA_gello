@@ -109,6 +109,8 @@ class GelloZMQ(Robot):
         self._configure_zmq_timeout(self.robot, name="robot")
         camera_host = self.config.camera_host or self.config.robot_host
         for camera in self._camera_names():
+            if camera.startswith("empty_camera"):
+                continue
             if camera == "wrist":
                 self.cameras[camera] = ZMQClientCamera(
                     port=self.config.wrist_camera_port, host=camera_host
@@ -120,7 +122,9 @@ class GelloZMQ(Robot):
                 )
                 self._configure_zmq_timeout(self.cameras[camera], name="base camera")
             else:
-                raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
+                raise ValueError(
+                    f"Unsupported GELLO camera {camera!r}; use wrist/base"
+                )
         self._preflight_robot_connection()
         self._open_joint_inference_log()
         self._is_connected = True
@@ -247,13 +251,23 @@ class GelloZMQ(Robot):
         live_camera_names = self._camera_names()
         policy_camera_names = self._policy_camera_names()
         for policy_camera_index, policy_camera in enumerate(policy_camera_names):
-            if policy_camera_index >= len(live_camera_names):
+            if policy_camera.startswith("empty_camera"):
                 obs[policy_camera] = np.zeros(
                     (self.config.image_height, self.config.image_width, 3),
                     dtype=np.uint8,
                 )
                 continue
-            live_camera = live_camera_names[policy_camera_index]
+            live_camera_index = sum(
+                not name.startswith("empty_camera")
+                for name in policy_camera_names[:policy_camera_index]
+            )
+            if live_camera_index >= len(live_camera_names):
+                obs[policy_camera] = np.zeros(
+                    (self.config.image_height, self.config.image_width, 3),
+                    dtype=np.uint8,
+                )
+                continue
+            live_camera = live_camera_names[live_camera_index]
             client = self.cameras[live_camera]
             rgb, _depth = client.read(
                 (self.config.image_width, self.config.image_height)
