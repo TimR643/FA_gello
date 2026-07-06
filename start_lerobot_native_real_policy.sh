@@ -11,14 +11,13 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/smolvla_pick_upper_red_block/checkpoints/last/pretrained_model}"
-: "${TASK:=pick the upper red block}"
+export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/go_left_right_even_20eps_smolVLA_base/checkpoints/020000/pretrained_model}"
+: "${TASK:=go right if a red block is detected, go left if a green bock is detected}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
-: "${FPS:=8}"
+: "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${AUTO_CAMERA_CONFIG:=true}"
-: "${N_ACTION_STEPS:=50}"
 
 RECORD_LEROBOT="${RECORD_LEROBOT:-false}"
 H5_LOG="${H5_LOG:-false}"
@@ -27,7 +26,6 @@ usage() {
   cat <<EOF_USAGE
 Usage:
   $0 [--record-lerobot] [--no-record-lerobot] [--h5-log] [--no-h5-log]
-
 
 Examples:
   $0
@@ -46,9 +44,6 @@ Environment overrides:
   FPS                          Control loop FPS
   RETURN_TO_INITIAL_POSITION   true/false
   AUTO_CAMERA_CONFIG           true/false, infer rollout cameras from policy config
-  N_ACTION_STEPS               Number of actions executed per predicted chunk before
-                               replanning (lower = more reactive/less jittery,
-                               higher = smoother but more open-loop). default: 10
 
 LeRobot recording:
   INFERENCE_BASE_DIR           Base folder for inference datasets and H5 logs
@@ -287,9 +282,9 @@ PY
 # Kamera-Konfiguration
 # ---------------------------------------------------------------------
 #
-# Unterstützte Fälle:
+# UnterstÃ¼tzte FÃ¤lle:
 #
-# 1) Ältere/selbst trainierte SmolVLA-Checkpoints:
+# 1) Ã„ltere/selbst trainierte SmolVLA-Checkpoints:
 #
 #      POLICY_CAMERA_NAMES=wrist,base,empty_camera_0,empty_camera_1
 #      CAMERA_NAMES=wrist,base
@@ -306,12 +301,12 @@ PY
 #      CAMERA_NAMES bleibt:
 #        wrist,base
 #
-# 3) Ältere Modelle mit camera1,camera2,camera3:
+# 3) Ã„ltere Modelle mit camera1,camera2,camera3:
 #
-#      Du kannst manuell überschreiben:
+#      Du kannst manuell Ã¼berschreiben:
 #
-#        CAMERA_NAMES=wrist,base \
-#        POLICY_CAMERA_NAMES=camera1,camera2,camera3 \
+#        CAMERA_NAMES=wrist,base \\
+#        POLICY_CAMERA_NAMES=camera1,camera2,camera3 \\
 #        ./start_lerobot_native_real_policy.sh
 #
 # ---------------------------------------------------------------------
@@ -363,7 +358,7 @@ RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
 INFERENCE_BASE_DIR="${INFERENCE_BASE_DIR:-$HOME/lerobot_inferences}"
 
 # LeRobot-Aufnahme:
-# Jeder Lauf bekommt standardmäßig einen neuen Dataset-Root.
+# Jeder Lauf bekommt standardmÃ¤ÃŸig einen neuen Dataset-Root.
 # Wichtig: Dieser konkrete Root darf vorher noch NICHT existieren.
 LEROBOT_RECORD_ROOT_RESOLVED="${LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME}_${RUN_STAMP}}"
 
@@ -380,7 +375,7 @@ H5_LOG_BASENAME="${H5_LOG_BASENAME:-${MODEL_NAME}_${RUN_STAMP}}"
 H5_DELETE_INTERMEDIATE_CSV_RESOLVED="${H5_DELETE_INTERMEDIATE_CSV:-true}"
 
 # gello_zmq kann aktuell nur ein Joint-CSV schreiben. Dieses wird nach jeder Episode nach H5 konvertiert.
-# Ohne --h5-log ist der Joint-CSV-Logger standardmäßig deaktiviert, damit der alte normale Logger entfernt ist.
+# Ohne --h5-log ist der Joint-CSV-Logger standardmÃ¤ÃŸig deaktiviert, damit der alte normale Logger entfernt ist.
 if [[ "$H5_LOG" == "true" ]]; then
   JOINT_INFERENCE_LOG_DIR_RESOLVED="${JOINT_INFERENCE_LOG_DIR:-$INFERENCE_BASE_DIR/joint_csv/${MODEL_NAME}_${RUN_STAMP}}"
 else
@@ -405,10 +400,9 @@ POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 RECORD_LEROBOT=$RECORD_LEROBOT
 H5_LOG=$H5_LOG
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
-MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.01}
+MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.2}
 MAX_GRIPPER_DELTA=${MAX_GRIPPER_DELTA:-1.0}
 ACTION_MODE=${ACTION_MODE:-absolute_joint_position}
-N_ACTION_STEPS=$N_ACTION_STEPS
 JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR_RESOLVED
 JOINT_INFERENCE_LOG_ENABLED=$JOINT_INFERENCE_LOG_ENABLED_RESOLVED
 EOF_CONFIG
@@ -442,7 +436,7 @@ for name in ["pandas", "h5py", "numpy"]:
         missing.append(name)
 if missing:
     raise SystemExit(
-        "FEHLT: Python-Pakete für H5-Logging fehlen: "
+        "FEHLT: Python-Pakete fÃ¼r H5-Logging fehlen: "
         + ", ".join(missing)
         + "\nInstalliere einmalig mit: python -m pip install "
         + " ".join(missing)
@@ -461,7 +455,7 @@ convert_latest_joint_csv_to_h5() {
   latest_csv="$(ls -t "$JOINT_INFERENCE_LOG_DIR_RESOLVED"/*.csv 2>/dev/null | head -n 1 || true)"
 
   if [[ -z "$latest_csv" ]]; then
-    echo "WARNUNG: Kein Joint-CSV für H5-Konvertierung gefunden in $JOINT_INFERENCE_LOG_DIR_RESOLVED" >&2
+    echo "WARNUNG: Kein Joint-CSV fÃ¼r H5-Konvertierung gefunden in $JOINT_INFERENCE_LOG_DIR_RESOLVED" >&2
     return 0
   fi
 
@@ -618,7 +612,7 @@ with h5py.File(h5_path, "w") as f:
 
     # Neue Erkenntnis:
     # In deinem aktuellen CSV sind joint_*_velocity_rad_s identisch zu joint_*_position_rad.
-    # Solche Velocity-Spalten dürfen nicht als echte state/dq gespeichert werden.
+    # Solche Velocity-Spalten dÃ¼rfen nicht als echte state/dq gespeichert werden.
     if q_data is not None and dq_raw_data is not None and q_data.shape == dq_raw_data.shape:
         if np.allclose(q_data, dq_raw_data, equal_nan=True):
             dq_is_valid = False
@@ -646,7 +640,7 @@ with h5py.File(h5_path, "w") as f:
     if q_data is not None and len(q_data) >= 2:
         t = f["time"][:]
 
-        # Falls time absolute Unix-Zeit ist, ist das okay: np.gradient nutzt nur die Abstände.
+        # Falls time absolute Unix-Zeit ist, ist das okay: np.gradient nutzt nur die AbstÃ¤nde.
         try:
             dq_est = np.gradient(q_data, t, axis=0)
             dq_source = "numerical_gradient_of_state_q_using_time"
@@ -667,7 +661,7 @@ PY
 
   if [[ "$H5_DELETE_INTERMEDIATE_CSV_RESOLVED" == "true" ]]; then
     rm -f "$latest_csv"
-    echo "Temporäres Joint-CSV gelöscht: $latest_csv"
+    echo "TemporÃ¤res Joint-CSV gelÃ¶scht: $latest_csv"
   fi
 }
 
@@ -680,7 +674,6 @@ run_rollout_episode() {
     lerobot-rollout
     --strategy.type="$ROLLOUT_STRATEGY"
     --policy.path="$CKPT"
-    --policy.n_action_steps="$N_ACTION_STEPS"
     --fps="$FPS"
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION"
     --robot.type=gello_zmq
@@ -692,7 +685,7 @@ run_rollout_episode() {
     --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}"
     --robot.camera_names="$CAMERA_NAMES_RESOLVED"
     --robot.policy_camera_names="$POLICY_CAMERA_NAMES_RESOLVED"
-    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.1}"
+    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.2}"
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}"
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
     --robot.joint_inference_log_dir="$JOINT_INFERENCE_LOG_DIR_RESOLVED"
