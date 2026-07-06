@@ -49,8 +49,8 @@ class Args:
     expected_image_height: int = 480
     expected_image_width: int = 640
 
-    max_joint_delta: float = 0.005
-    max_gripper_delta: float = 0.01
+    max_joint_delta: float = 0.5
+    max_gripper_delta: float = 1.0
     action_mode: str = "absolute_joint_position"
 
     task: str = "Move right when the red block is visible, otherwise move left."

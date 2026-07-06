@@ -30,9 +30,9 @@ python experiments/run_smolvla_real_robot_hpc.py \
   --robot-port 6001 \
   --wrist-camera-port 5000 \
   --cameras wrist \
-  --duration 10.0 \
-  --hz 2.0 \
-  --max-joint-delta 0.005 \
-  --max-gripper-delta 0.01 \
+  --duration 50.0 \
+  --hz 10.0 \
+  --max-joint-delta 0.2 \
+  --max-gripper-delta 1.0 \
   --task "Move right when the red block is visible, otherwise move left." \
   --execute

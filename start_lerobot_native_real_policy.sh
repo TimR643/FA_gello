@@ -11,13 +11,14 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/go_left_right_even_10eps/checkpoints/last/pretrained_model}"
-: "${TASK:=go right if a red block is detected, go left if a green bock is detected}"
+export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/smolvla_pick_upper_red_block/checkpoints/last/pretrained_model}"
+: "${TASK:=pick the upper red block}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
-: "${FPS:=10}"
+: "${FPS:=8}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${AUTO_CAMERA_CONFIG:=true}"
+: "${N_ACTION_STEPS:=50}"
 
 RECORD_LEROBOT="${RECORD_LEROBOT:-false}"
 H5_LOG="${H5_LOG:-false}"
@@ -26,6 +27,7 @@ usage() {
   cat <<EOF_USAGE
 Usage:
   $0 [--record-lerobot] [--no-record-lerobot] [--h5-log] [--no-h5-log]
+
 
 Examples:
   $0
@@ -44,6 +46,9 @@ Environment overrides:
   FPS                          Control loop FPS
   RETURN_TO_INITIAL_POSITION   true/false
   AUTO_CAMERA_CONFIG           true/false, infer rollout cameras from policy config
+  N_ACTION_STEPS               Number of actions executed per predicted chunk before
+                               replanning (lower = more reactive/less jittery,
+                               higher = smoother but more open-loop). default: 10
 
 LeRobot recording:
   INFERENCE_BASE_DIR           Base folder for inference datasets and H5 logs
@@ -305,8 +310,8 @@ PY
 #
 #      Du kannst manuell überschreiben:
 #
-#        CAMERA_NAMES=wrist,base \\
-#        POLICY_CAMERA_NAMES=camera1,camera2,camera3 \\
+#        CAMERA_NAMES=wrist,base \
+#        POLICY_CAMERA_NAMES=camera1,camera2,camera3 \
 #        ./start_lerobot_native_real_policy.sh
 #
 # ---------------------------------------------------------------------
@@ -400,9 +405,10 @@ POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 RECORD_LEROBOT=$RECORD_LEROBOT
 H5_LOG=$H5_LOG
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
-MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.2}
+MAX_JOINT_DELTA=${MAX_JOINT_DELTA:-0.01}
 MAX_GRIPPER_DELTA=${MAX_GRIPPER_DELTA:-1.0}
 ACTION_MODE=${ACTION_MODE:-absolute_joint_position}
+N_ACTION_STEPS=$N_ACTION_STEPS
 JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR_RESOLVED
 JOINT_INFERENCE_LOG_ENABLED=$JOINT_INFERENCE_LOG_ENABLED_RESOLVED
 EOF_CONFIG
@@ -674,6 +680,7 @@ run_rollout_episode() {
     lerobot-rollout
     --strategy.type="$ROLLOUT_STRATEGY"
     --policy.path="$CKPT"
+    --policy.n_action_steps="$N_ACTION_STEPS"
     --fps="$FPS"
     --return_to_initial_position="$RETURN_TO_INITIAL_POSITION"
     --robot.type=gello_zmq
@@ -685,7 +692,7 @@ run_rollout_episode() {
     --robot.zmq_timeout_ms="${ZMQ_TIMEOUT_MS:-3000}"
     --robot.camera_names="$CAMERA_NAMES_RESOLVED"
     --robot.policy_camera_names="$POLICY_CAMERA_NAMES_RESOLVED"
-    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.2}"
+    --robot.max_joint_delta="${MAX_JOINT_DELTA:-0.1}"
     --robot.max_gripper_delta="${MAX_GRIPPER_DELTA:-1.0}"
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
     --robot.joint_inference_log_dir="$JOINT_INFERENCE_LOG_DIR_RESOLVED"
