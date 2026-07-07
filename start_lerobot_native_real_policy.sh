@@ -11,11 +11,11 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/go_left_right_even_20eps_smolVLA_base/checkpoints/020000/pretrained_model}"
+export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/smolvla_left_right/checkpoints/060000/pretrained_model}"
 : "${TASK:=go right if a red block is detected, go left if a green bock is detected}"
 : "${DURATION:=50}"
 : "${NUM_EPISODES:=1}"
-: "${FPS:=10}"
+: "${FPS:=5}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${AUTO_CAMERA_CONFIG:=true}"
 

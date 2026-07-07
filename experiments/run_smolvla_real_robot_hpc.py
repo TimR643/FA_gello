@@ -53,7 +53,7 @@ class Args:
     max_gripper_delta: float = 1.0
     action_mode: str = "absolute_joint_position"
 
-    task: str = "Move right when the red block is visible, otherwise move left."
+    task: str = "Go right if a red block is detected, go left if a green block is detected"
 
 
 def _make_camera_clients(args: Args) -> dict[str, ZMQClientCamera]:

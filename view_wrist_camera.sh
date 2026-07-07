@@ -15,7 +15,7 @@ python scripts/view_zmq_camera.py \
   --port "${WRIST_CAMERA_PORT:-5000}" \
   --width "${CAMERA_WIDTH:-640}" \
   --height "${CAMERA_HEIGHT:-480}" \
-  --fps "${PREVIEW_FPS:-2}" \
+  --fps "${PREVIEW_FPS:-0.5}" \
   --timeout-ms "${ZMQ_TIMEOUT_MS:-3000}" \
   --window-name "${WINDOW_NAME:-GELLO wrist camera}" \
   --lerobot-key "${LEROBOT_KEY:-observation.images.wrist}" \
