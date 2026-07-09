@@ -32,7 +32,9 @@ class Args:
     bind_hostname: str = "0.0.0.0"
     port: int = 7000
 
-    camera_source: str = "local_realsense"
+    camera_source: str = "mixed"
+    wrist_camera_source: str = "remote_zmq"
+    base_camera_source: str = "local_realsense"
     camera_hostname: str = "127.0.0.1"
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
@@ -52,6 +54,18 @@ class Args:
     camera_poll_period_s: float = 0.05
     camera_startup_timeout_s: float = 5.0
 
+
+
+def _camera_source_for(camera: str, args: Args) -> str:
+    if args.enable_remote_camera_polling:
+        return "remote_zmq"
+    if args.camera_source != "mixed":
+        return args.camera_source
+    if camera == "wrist":
+        return args.wrist_camera_source
+    if camera == "base":
+        return args.base_camera_source
+    raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
 
 def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
     socket = getattr(camera, "_socket", None)
@@ -121,9 +135,7 @@ class RemoteCameraPoller:
                 f"Unsupported camera {self.camera!r}; expected 'wrist' or 'base'."
             )
 
-        camera_source = self.args.camera_source
-        if self.args.enable_remote_camera_polling:
-            camera_source = "remote_zmq"
+        camera_source = _camera_source_for(self.camera, self.args)
 
         if camera_source == "local_realsense":
             from gello.cameras.realsense_camera import RealSenseCamera
@@ -207,7 +219,11 @@ class RemoteCameraPoller:
 
 
 def _make_camera_pollers(args: Args) -> Dict[str, RemoteCameraPoller]:
-    pollers = {camera: RemoteCameraPoller(camera, args) for camera in args.cameras}
+    pollers = {
+        camera: RemoteCameraPoller(camera, args)
+        for camera in args.cameras
+        if _camera_source_for(camera, args) != "disabled"
+    }
     for poller in pollers.values():
         poller.start()
     return pollers
@@ -244,7 +260,7 @@ def _attach_remote_camera_frames(
     camera_pollers: Optional[Dict[str, RemoteCameraPoller]],
 ) -> Dict[str, Any]:
     for camera in cameras:
-        if camera_pollers is None:
+        if camera_pollers is None or camera not in camera_pollers:
             obs[f"{camera}_rgb"] = np.zeros(IMAGE_SHAPE, dtype=np.uint8)
         else:
             obs[f"{camera}_rgb"] = camera_pollers[camera].latest_frame()
@@ -267,22 +283,22 @@ def main(args: Args) -> None:
     recording = False
     frame_count = 0
 
-    camera_source = "remote_zmq" if args.enable_remote_camera_polling else args.camera_source
+    camera_sources = {camera: _camera_source_for(camera, args) for camera in args.cameras}
     print("Waiting for state/action stream messages...")
-    print("Camera source:", camera_source)
+    print("Camera sources:", camera_sources)
     print("Camera host for remote_zmq:", args.camera_hostname)
     print("Cameras:", args.cameras)
-    if camera_source == "remote_zmq":
+    if any(source == "remote_zmq" for source in camera_sources.values()):
         print(
             "WARNING: remote_zmq camera capture must not point at the "
-            "Franka/Polymetis realtime laptop. Prefer camera_source=local_realsense "
-            "on the recording machine."
+            "Franka/Polymetis realtime laptop. Use it only for Ethernet cameras "
+            "or non-realtime camera hosts."
         )
-    elif camera_source == "disabled":
+    if all(source == "disabled" for source in camera_sources.values()):
         print("Camera capture disabled; recording black video placeholders.")
 
     def start_camera_pollers() -> Optional[Dict[str, RemoteCameraPoller]]:
-        if camera_source == "disabled":
+        if all(source == "disabled" for source in camera_sources.values()):
             return None
         pollers = _make_camera_pollers(args)
         missing_frames = []

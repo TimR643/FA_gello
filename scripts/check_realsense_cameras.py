@@ -27,8 +27,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check that required RealSense serials are visible."
     )
-    parser.add_argument("--wrist-camera-id", required=True)
-    parser.add_argument("--base-camera-id", required=True)
+    parser.add_argument("--wrist-camera-id")
+    parser.add_argument("--base-camera-id")
     args = parser.parse_args()
 
     try:
@@ -39,9 +39,16 @@ def main() -> int:
 
     print("Visible RealSense serials:", ", ".join(serials) if serials else "<none>")
     expected = {
-        "wrist": args.wrist_camera_id,
-        "base": args.base_camera_id,
+        name: serial
+        for name, serial in (
+            ("wrist", args.wrist_camera_id),
+            ("base", args.base_camera_id),
+        )
+        if serial
     }
+    if not expected:
+        print("ERROR: pass at least one expected camera ID.", file=sys.stderr)
+        return 1
     missing = [
         f"{name}={serial}"
         for name, serial in expected.items()

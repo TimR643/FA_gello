@@ -13,7 +13,9 @@ CONDA_ENV="${CONDA_ENV:-lerobot}"
 BIND_HOSTNAME="${BIND_HOSTNAME:-0.0.0.0}"
 RECORD_STREAM_PORT="${RECORD_STREAM_PORT:-7000}"
 
-CAMERA_SOURCE="${CAMERA_SOURCE:-local_realsense}"
+CAMERA_SOURCE="${CAMERA_SOURCE:-mixed}"
+WRIST_CAMERA_SOURCE="${WRIST_CAMERA_SOURCE:-remote_zmq}"
+BASE_CAMERA_SOURCE="${BASE_CAMERA_SOURCE:-local_realsense}"
 HPC_CAMERA_HOST="${HPC_CAMERA_HOST:-127.0.0.1}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
@@ -33,6 +35,7 @@ Starting HPC remote-camera recorder
   Project dir:       $PROJECT_DIR
   Bind:              $BIND_HOSTNAME:$RECORD_STREAM_PORT
   Camera source:     $CAMERA_SOURCE
+  Wrist/Base source: $WRIST_CAMERA_SOURCE / $BASE_CAMERA_SOURCE
   Remote camera host:$HPC_CAMERA_HOST
   Wrist/Base ports:  $WRIST_PORT / $BASE_PORT
   Wrist/Base IDs:    $WRIST_CAMERA_ID / $BASE_CAMERA_ID
@@ -67,16 +70,26 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         raise SystemExit(1) from exc
 PY
 
-if [ "$CAMERA_SOURCE" = "local_realsense" ]; then
-  python scripts/check_realsense_cameras.py \
-    --wrist-camera-id "$WRIST_CAMERA_ID" \
-    --base-camera-id "$BASE_CAMERA_ID"
+if [ "$CAMERA_SOURCE" = "local_realsense" ] || { [ "$CAMERA_SOURCE" = "mixed" ] && [ "$WRIST_CAMERA_SOURCE" = "local_realsense" ]; }; then
+  CHECK_WRIST_ARGS=(--wrist-camera-id "$WRIST_CAMERA_ID")
+else
+  CHECK_WRIST_ARGS=()
+fi
+if [ "$CAMERA_SOURCE" = "local_realsense" ] || { [ "$CAMERA_SOURCE" = "mixed" ] && [ "$BASE_CAMERA_SOURCE" = "local_realsense" ]; }; then
+  CHECK_BASE_ARGS=(--base-camera-id "$BASE_CAMERA_ID")
+else
+  CHECK_BASE_ARGS=()
+fi
+if [ "${#CHECK_WRIST_ARGS[@]}" -gt 0 ] || [ "${#CHECK_BASE_ARGS[@]}" -gt 0 ]; then
+  python scripts/check_realsense_cameras.py "${CHECK_WRIST_ARGS[@]}" "${CHECK_BASE_ARGS[@]}"
 fi
 
 python experiments/record_lerobot_stream_with_remote_cameras.py \
   --bind-hostname "$BIND_HOSTNAME" \
   --port "$RECORD_STREAM_PORT" \
   --camera-source "$CAMERA_SOURCE" \
+  --wrist-camera-source "$WRIST_CAMERA_SOURCE" \
+  --base-camera-source "$BASE_CAMERA_SOURCE" \
   --camera-hostname "$HPC_CAMERA_HOST" \
   --wrist-camera-port "$WRIST_PORT" \
   --base-camera-port "$BASE_PORT" \
