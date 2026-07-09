@@ -32,8 +32,8 @@ class Args:
     bind_hostname: str = "0.0.0.0"
     port: int = 7000
 
-    camera_source: str = "mixed"
-    wrist_camera_source: str = "remote_zmq"
+    camera_source: str = "local_realsense"
+    wrist_camera_source: str = "local_realsense"
     base_camera_source: str = "local_realsense"
     camera_hostname: str = "127.0.0.1"
     wrist_camera_hostname: str = ""
