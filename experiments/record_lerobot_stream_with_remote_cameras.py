@@ -1,11 +1,12 @@
-"""Record a LeRobot dataset on this machine while pulling cameras remotely.
+"""Record a LeRobot dataset from streamed robot state/action messages.
 
 This recorder is intended for setups where the robot-control laptop must not read
 or serialize camera frames in its real-time control loop. The laptop streams only
-small robot observations/actions via ``RecordingStreamInterface``. This process
-runs on the recording machine, receives those small messages, pulls RGB frames
-from camera ZMQ servers (typically running on the laptop), and writes a LeRobot
-video dataset.
+small robot observations/actions via ``RecordingStreamInterface``. By default this
+process records robot state/action with black video placeholders so it cannot
+load the Franka/Polymetis laptop. Remote camera polling must be enabled
+explicitly and should only target camera servers that do not disturb the robot
+real-time controller.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ class Args:
     lerobot_robot_type: str = "panda_gello"
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
+    enable_remote_camera_polling: bool = False
     camera_timeout_ms: int = 3000
     camera_poll_period_s: float = 0.05
     camera_startup_timeout_s: float = 5.0
@@ -197,10 +199,14 @@ def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
 
 def _attach_remote_camera_frames(
     obs: Dict[str, Any],
-    camera_pollers: Dict[str, RemoteCameraPoller],
+    cameras: Tuple[str, ...],
+    camera_pollers: Optional[Dict[str, RemoteCameraPoller]],
 ) -> Dict[str, Any]:
-    for camera, poller in camera_pollers.items():
-        obs[f"{camera}_rgb"] = poller.latest_frame()
+    for camera in cameras:
+        if camera_pollers is None:
+            obs[f"{camera}_rgb"] = np.zeros(IMAGE_SHAPE, dtype=np.uint8)
+        else:
+            obs[f"{camera}_rgb"] = camera_pollers[camera].latest_frame()
     return obs
 
 
@@ -223,8 +229,15 @@ def main(args: Args) -> None:
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
     print("Remote cameras:", args.cameras)
+    if not args.enable_remote_camera_polling:
+        print(
+            "Remote camera polling is disabled by default to protect the "
+            "Franka/Polymetis real-time loop; recording black video placeholders."
+        )
 
-    def start_camera_pollers() -> Dict[str, RemoteCameraPoller]:
+    def start_camera_pollers() -> Optional[Dict[str, RemoteCameraPoller]]:
+        if not args.enable_remote_camera_polling:
+            return None
         pollers = _make_camera_pollers(args)
         for camera, poller in pollers.items():
             if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
@@ -260,7 +273,7 @@ def main(args: Args) -> None:
                     camera_pollers = start_camera_pollers()
 
                 obs = _copy_robot_obs(message["obs"])
-                obs = _attach_remote_camera_frames(obs, camera_pollers)
+                obs = _attach_remote_camera_frames(obs, args.cameras, camera_pollers)
                 writer.add_frame(obs, message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
