@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import re
+import subprocess
 import sys
 
 
-def _list_realsense_serials() -> list[str]:
+def _serials_from_pyrealsense() -> list[str]:
     try:
         import pyrealsense2 as rs
     except ImportError as exc:
@@ -21,6 +23,40 @@ def _list_realsense_serials() -> list[str]:
         dev.get_info(rs.camera_info.serial_number)
         for dev in ctx.query_devices()
     ]
+
+
+def _serials_from_rs_enumerate() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["rs-enumerate-devices", "-s"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+
+    serials: list[str] = []
+    for line in result.stdout.splitlines():
+        # Example row: ``Intel RealSense D455          318122303303        5.17.0.10``
+        match = re.search(r"\b([A-Z0-9]{10,})\b", line)
+        if match:
+            serials.append(match.group(1))
+    return serials
+
+
+def _list_realsense_serials() -> list[str]:
+    serials = _serials_from_pyrealsense()
+    # Network/FRAMOS devices can show up in rs-enumerate-devices even when the
+    # pyrealsense context query only reports USB devices. Include both views for
+    # startup validation; the actual recorder still opens by serial.
+    for serial in _serials_from_rs_enumerate():
+        if serial not in serials:
+            serials.append(serial)
+    return serials
 
 
 def main() -> int:
