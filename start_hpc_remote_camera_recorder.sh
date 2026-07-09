@@ -67,6 +67,12 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         raise SystemExit(1) from exc
 PY
 
+if [ "$CAMERA_SOURCE" = "local_realsense" ]; then
+  python scripts/check_realsense_cameras.py \
+    --wrist-camera-id "$WRIST_CAMERA_ID" \
+    --base-camera-id "$BASE_CAMERA_ID"
+fi
+
 python experiments/record_lerobot_stream_with_remote_cameras.py \
   --bind-hostname "$BIND_HOSTNAME" \
   --port "$RECORD_STREAM_PORT" \
