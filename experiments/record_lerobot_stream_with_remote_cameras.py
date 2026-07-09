@@ -36,6 +36,8 @@ class Args:
     wrist_camera_source: str = "remote_zmq"
     base_camera_source: str = "local_realsense"
     camera_hostname: str = "127.0.0.1"
+    wrist_camera_hostname: str = ""
+    base_camera_hostname: str = ""
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     wrist_camera_id: str = "6CD1460304A5"
@@ -65,6 +67,14 @@ def _camera_source_for(camera: str, args: Args) -> str:
         return args.wrist_camera_source
     if camera == "base":
         return args.base_camera_source
+    raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
+
+
+def _camera_host_for(camera: str, args: Args) -> str:
+    if camera == "wrist":
+        return args.wrist_camera_hostname or args.camera_hostname
+    if camera == "base":
+        return args.base_camera_hostname or args.camera_hostname
     raise ValueError(f"Unsupported camera {camera!r}; expected 'wrist' or 'base'.")
 
 def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
@@ -157,11 +167,13 @@ class RemoteCameraPoller:
         if camera_source == "remote_zmq":
             if self.camera == "wrist":
                 client = ZMQClientCamera(
-                    port=self.args.wrist_camera_port, host=self.args.camera_hostname
+                    port=self.args.wrist_camera_port,
+                    host=_camera_host_for(self.camera, self.args),
                 )
             else:
                 client = ZMQClientCamera(
-                    port=self.args.base_camera_port, host=self.args.camera_hostname
+                    port=self.args.base_camera_port,
+                    host=_camera_host_for(self.camera, self.args),
                 )
             _configure_camera_timeout(client, self.args.camera_timeout_ms)
             return client
@@ -270,8 +282,9 @@ def _attach_remote_camera_frames(
 def _camera_failure_hint(camera: str, source: str, detail: str) -> str:
     if source == "remote_zmq":
         return (
-            f"{camera}: {detail} (remote_zmq: check HPC_CAMERA_HOST, port, "
-            "tunnel, and that the Ethernet/ZMQ camera server is running)"
+            f"{camera}: {detail} (remote_zmq: check "
+            "WRIST_CAMERA_HOST/HPC_CAMERA_HOST, port, tunnel, and that the "
+            "Ethernet/ZMQ camera server is running)"
         )
     if source == "local_realsense" and (
         "busy" in detail.lower() or "errno=16" in detail
@@ -308,7 +321,10 @@ def main(args: Args) -> None:
     camera_sources = {camera: _camera_source_for(camera, args) for camera in args.cameras}
     print("Waiting for state/action stream messages...")
     print("Camera sources:", camera_sources)
-    print("Camera host for remote_zmq:", args.camera_hostname)
+    print(
+        "Camera hosts for remote_zmq:",
+        {camera: _camera_host_for(camera, args) for camera in args.cameras},
+    )
     print("Cameras:", args.cameras)
     if any(source == "remote_zmq" for source in camera_sources.values()):
         print(

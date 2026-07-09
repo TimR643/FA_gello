@@ -17,6 +17,8 @@ CAMERA_SOURCE="${CAMERA_SOURCE:-mixed}"
 WRIST_CAMERA_SOURCE="${WRIST_CAMERA_SOURCE:-remote_zmq}"
 BASE_CAMERA_SOURCE="${BASE_CAMERA_SOURCE:-local_realsense}"
 HPC_CAMERA_HOST="${HPC_CAMERA_HOST:-127.0.0.1}"
+WRIST_CAMERA_HOST="${WRIST_CAMERA_HOST:-$HPC_CAMERA_HOST}"
+BASE_CAMERA_HOST="${BASE_CAMERA_HOST:-$HPC_CAMERA_HOST}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
 WRIST_CAMERA_ID="${WRIST_CAMERA_ID:-6CD1460304A5}"
@@ -37,6 +39,7 @@ Starting HPC remote-camera recorder
   Camera source:     $CAMERA_SOURCE
   Wrist/Base source: $WRIST_CAMERA_SOURCE / $BASE_CAMERA_SOURCE
   Remote camera host:$HPC_CAMERA_HOST
+  Wrist/Base hosts:  $WRIST_CAMERA_HOST / $BASE_CAMERA_HOST
   Wrist/Base ports:  $WRIST_PORT / $BASE_PORT
   Wrist/Base IDs:    $WRIST_CAMERA_ID / $BASE_CAMERA_ID
   Camera timeout:    ${CAMERA_TIMEOUT_MS} ms
@@ -89,7 +92,7 @@ if [ "$CAMERA_SOURCE" = "remote_zmq" ] || { [ "$CAMERA_SOURCE" = "mixed" ] && [ 
 import socket
 import sys
 
-host = "${HPC_CAMERA_HOST}"
+host = "${WRIST_CAMERA_HOST}"
 port = int("${WRIST_PORT}")
 try:
     with socket.create_connection((host, port), timeout=2.0):
@@ -97,8 +100,9 @@ try:
 except OSError as exc:
     print(
         f"ERROR: wrist remote_zmq camera is not reachable at {host}:{port}. "
-        "Set HPC_CAMERA_HOST to the Ethernet camera/ZMQ host visible from this "
-        "recorder, start the wrist camera server, or configure a tunnel.",
+        "Set WRIST_CAMERA_HOST (or HPC_CAMERA_HOST) to the Ethernet "
+        "camera/ZMQ host visible from this recorder, start the wrist camera "
+        "server, or configure a tunnel.",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -112,6 +116,8 @@ python experiments/record_lerobot_stream_with_remote_cameras.py \
   --wrist-camera-source "$WRIST_CAMERA_SOURCE" \
   --base-camera-source "$BASE_CAMERA_SOURCE" \
   --camera-hostname "$HPC_CAMERA_HOST" \
+  --wrist-camera-hostname "$WRIST_CAMERA_HOST" \
+  --base-camera-hostname "$BASE_CAMERA_HOST" \
   --wrist-camera-port "$WRIST_PORT" \
   --base-camera-port "$BASE_PORT" \
   --wrist-camera-id "$WRIST_CAMERA_ID" \
