@@ -37,7 +37,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     wrist_camera_id: str = "6CD1460304A5"
-    base_camera_id: str = ""
+    base_camera_id: str = "318122303303"
     cameras: Tuple[str, ...] = ("wrist", "base")
 
     lerobot_root: str = "~/lerobot_data"

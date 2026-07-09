@@ -18,7 +18,7 @@ HPC_CAMERA_HOST="${HPC_CAMERA_HOST:-127.0.0.1}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
 WRIST_CAMERA_ID="${WRIST_CAMERA_ID:-6CD1460304A5}"
-BASE_CAMERA_ID="${BASE_CAMERA_ID:-}"
+BASE_CAMERA_ID="${BASE_CAMERA_ID:-318122303303}"
 
 LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/basecam_test}"
 LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/basecam_test}"
@@ -35,7 +35,7 @@ Starting HPC remote-camera recorder
   Camera source:     $CAMERA_SOURCE
   Remote camera host:$HPC_CAMERA_HOST
   Wrist/Base ports:  $WRIST_PORT / $BASE_PORT
-  Wrist/Base IDs:    $WRIST_CAMERA_ID / ${BASE_CAMERA_ID:-<required for local_realsense>}
+  Wrist/Base IDs:    $WRIST_CAMERA_ID / $BASE_CAMERA_ID
   Camera timeout:    ${CAMERA_TIMEOUT_MS} ms
   Dataset root:      $LEROBOT_ROOT
   Repo id:           $LEROBOT_REPO_ID
