@@ -47,6 +47,26 @@ source "$CONDA_SETUP"
 conda activate "$CONDA_ENV"
 cd "$PROJECT_DIR"
 
+python - <<PY
+import socket
+import sys
+
+host = "${BIND_HOSTNAME}"
+port = int("${RECORD_STREAM_PORT}")
+bind_host = "" if host in {"0.0.0.0", "*"} else host
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    try:
+        sock.bind((bind_host, port))
+    except OSError as exc:
+        print(
+            f"ERROR: recording stream port {host}:{port} is already in use. "
+            "Stop the old recorder or set RECORD_STREAM_PORT to a free port "
+            "on both this recorder and the Franka laptop.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+PY
+
 python experiments/record_lerobot_stream_with_remote_cameras.py \
   --bind-hostname "$BIND_HOSTNAME" \
   --port "$RECORD_STREAM_PORT" \
