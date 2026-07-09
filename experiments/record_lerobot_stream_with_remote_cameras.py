@@ -1,12 +1,11 @@
-"""Record a LeRobot dataset from streamed robot state/action messages.
+"""Record synchronized LeRobot episodes without loading the Franka laptop.
 
-This recorder is intended for setups where the robot-control laptop must not read
-or serialize camera frames in its real-time control loop. The laptop streams only
-small robot observations/actions via ``RecordingStreamInterface``. By default this
-process records robot state/action with black video placeholders so it cannot
-load the Franka/Polymetis laptop. Remote camera polling must be enabled
-explicitly and should only target camera servers that do not disturb the robot
-real-time controller.
+The Franka/Polymetis laptop streams only small robot observations/actions via
+``RecordingStreamInterface``. Camera capture should run on this recording machine
+(or another non-real-time machine), not on the robot-control laptop. The recorder
+keeps the newest frame from both cameras in background workers and attaches those
+frames to each received robot sample so video and joints share the same LeRobot
+frame index without blocking the Franka real-time loop.
 """
 
 from __future__ import annotations
@@ -33,9 +32,12 @@ class Args:
     bind_hostname: str = "0.0.0.0"
     port: int = 7000
 
+    camera_source: str = "local_realsense"
     camera_hostname: str = "127.0.0.1"
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
+    wrist_camera_id: str = "6CD1460304A5"
+    base_camera_id: str = ""
     cameras: Tuple[str, ...] = ("wrist", "base")
 
     lerobot_root: str = "~/lerobot_data"
@@ -66,16 +68,13 @@ def _close_camera_client(client: ZMQClientCamera) -> None:
 
 
 class RemoteCameraPoller:
-    """Continuously keep the newest frame from one remote ZMQ camera.
+    """Continuously keep the newest frame from one camera source.
 
-    The recorder must not block the state/action receive loop on synchronous
-    camera reads. If it does, two cameras plus network/encoding jitter can make
-    the PULL socket accumulate old robot samples, so the video appears seconds
-    behind the joint/action plots. This poller absorbs camera latency in a
-    background thread and lets the recorder attach the latest available image in
-    constant time. The polling rate is deliberately capped so the camera servers
-    on the Franka/Polymetis laptop are not hammered while it is controlling the
-    robot.
+    The recorder must not block the state/action receive loop on camera reads.
+    Camera workers run on the recording machine by default via local RealSense
+    devices, so the Franka/Polymetis laptop only sends small robot messages. A
+    remote ZMQ source remains available for non-real-time camera hosts, but it
+    should not point at the robot-control laptop.
     """
 
     def __init__(self, camera: str, args: Args):
@@ -84,7 +83,7 @@ class RemoteCameraPoller:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._first_frame_event = threading.Event()
-        self._client: Optional[ZMQClientCamera] = None
+        self._client: Optional[Any] = None
         self._frame: Optional[np.ndarray] = None
         self._frame_time_monotonic: Optional[float] = None
         self._failures = 0
@@ -111,26 +110,60 @@ class RemoteCameraPoller:
         self._thread.join(timeout=2.0)
         self._close_client()
 
-    def _make_client(self) -> ZMQClientCamera:
-        if self.camera == "wrist":
-            client = ZMQClientCamera(
-                port=self.args.wrist_camera_port, host=self.args.camera_hostname
-            )
-        elif self.camera == "base":
-            client = ZMQClientCamera(
-                port=self.args.base_camera_port, host=self.args.camera_hostname
-            )
-        else:
+    def _make_client(self) -> Any:
+        if self.camera not in {"wrist", "base"}:
             raise ValueError(
                 f"Unsupported camera {self.camera!r}; expected 'wrist' or 'base'."
             )
-        _configure_camera_timeout(client, self.args.camera_timeout_ms)
-        return client
+
+        camera_source = self.args.camera_source
+        if self.args.enable_remote_camera_polling:
+            camera_source = "remote_zmq"
+
+        if camera_source == "local_realsense":
+            from gello.cameras.realsense_camera import RealSenseCamera
+
+            camera_id = (
+                self.args.wrist_camera_id
+                if self.camera == "wrist"
+                else self.args.base_camera_id
+            )
+            if not camera_id:
+                raise ValueError(
+                    f"Missing {self.camera}_camera_id for local RealSense capture. "
+                    "Pass --wrist-camera-id/--base-camera-id or use "
+                    "--camera-source remote_zmq with cameras hosted away from the "
+                    "Franka realtime laptop."
+                )
+            return RealSenseCamera(camera_id)
+
+        if camera_source == "remote_zmq":
+            if self.camera == "wrist":
+                client = ZMQClientCamera(
+                    port=self.args.wrist_camera_port, host=self.args.camera_hostname
+                )
+            else:
+                client = ZMQClientCamera(
+                    port=self.args.base_camera_port, host=self.args.camera_hostname
+                )
+            _configure_camera_timeout(client, self.args.camera_timeout_ms)
+            return client
+
+        raise ValueError(
+            f"Unsupported camera_source {camera_source!r}; expected "
+            "'local_realsense', 'remote_zmq', or 'disabled'."
+        )
 
     def _close_client(self) -> None:
-        if self._client is not None:
+        if self._client is None:
+            return
+        if isinstance(self._client, ZMQClientCamera):
             _close_camera_client(self._client)
-            self._client = None
+        else:
+            pipeline = getattr(self._client, "_pipeline", None)
+            if pipeline is not None:
+                pipeline.stop()
+        self._client = None
 
     def _reconnect_after_failure(self, exc: Exception) -> None:
         self._failures += 1
@@ -226,17 +259,22 @@ def main(args: Args) -> None:
     recording = False
     frame_count = 0
 
+    camera_source = "remote_zmq" if args.enable_remote_camera_polling else args.camera_source
     print("Waiting for state/action stream messages...")
-    print("Remote camera host:", args.camera_hostname)
-    print("Remote cameras:", args.cameras)
-    if not args.enable_remote_camera_polling:
+    print("Camera source:", camera_source)
+    print("Camera host for remote_zmq:", args.camera_hostname)
+    print("Cameras:", args.cameras)
+    if camera_source == "remote_zmq":
         print(
-            "Remote camera polling is disabled by default to protect the "
-            "Franka/Polymetis real-time loop; recording black video placeholders."
+            "WARNING: remote_zmq camera capture must not point at the "
+            "Franka/Polymetis realtime laptop. Prefer camera_source=local_realsense "
+            "on the recording machine."
         )
+    elif camera_source == "disabled":
+        print("Camera capture disabled; recording black video placeholders.")
 
     def start_camera_pollers() -> Optional[Dict[str, RemoteCameraPoller]]:
-        if not args.enable_remote_camera_polling:
+        if camera_source == "disabled":
             return None
         pollers = _make_camera_pollers(args)
         for camera, poller in pollers.items():
