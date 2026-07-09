@@ -10,8 +10,10 @@ video dataset.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import tyro
@@ -43,6 +45,8 @@ class Args:
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     camera_timeout_ms: int = 3000
+    camera_poll_period_s: float = 0.001
+    camera_startup_timeout_s: float = 5.0
 
 
 def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
@@ -59,30 +63,114 @@ def _close_camera_client(client: ZMQClientCamera) -> None:
     client._context.term()
 
 
-def _close_camera_clients(camera_clients: Dict[str, ZMQClientCamera]) -> None:
-    for client in camera_clients.values():
-        _close_camera_client(client)
+class RemoteCameraPoller:
+    """Continuously keep the newest frame from one remote ZMQ camera.
 
+    The recorder must not block the state/action receive loop on synchronous
+    camera reads. If it does, two cameras plus network/encoding jitter can make
+    the PULL socket accumulate old robot samples, so the video appears seconds
+    behind the joint/action plots. This poller absorbs camera latency in a
+    background thread and lets the recorder attach the latest available image in
+    constant time.
+    """
 
-def _make_camera_client(args: Args, camera: str) -> ZMQClientCamera:
-    if camera == "wrist":
-        client = ZMQClientCamera(
-            port=args.wrist_camera_port, host=args.camera_hostname
+    def __init__(self, camera: str, args: Args):
+        self.camera = camera
+        self.args = args
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._first_frame_event = threading.Event()
+        self._client: Optional[ZMQClientCamera] = None
+        self._frame: Optional[np.ndarray] = None
+        self._frame_time_monotonic: Optional[float] = None
+        self._failures = 0
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"remote-camera-poller-{camera}",
+            daemon=True,
         )
-    elif camera == "base":
-        client = ZMQClientCamera(
-            port=args.base_camera_port, host=args.camera_hostname
-        )
-    else:
-        raise ValueError(
-            f"Unsupported camera {camera!r}; expected 'wrist' or 'base'."
-        )
-    _configure_camera_timeout(client, args.camera_timeout_ms)
-    return client
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def wait_for_first_frame(self, timeout_s: float) -> bool:
+        return self._first_frame_event.wait(timeout=max(0.0, timeout_s))
+
+    def latest_frame(self) -> np.ndarray:
+        with self._lock:
+            if self._frame is None:
+                return np.zeros(IMAGE_SHAPE, dtype=np.uint8)
+            return self._frame.copy()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=2.0)
+        self._close_client()
+
+    def _make_client(self) -> ZMQClientCamera:
+        if self.camera == "wrist":
+            client = ZMQClientCamera(
+                port=self.args.wrist_camera_port, host=self.args.camera_hostname
+            )
+        elif self.camera == "base":
+            client = ZMQClientCamera(
+                port=self.args.base_camera_port, host=self.args.camera_hostname
+            )
+        else:
+            raise ValueError(
+                f"Unsupported camera {self.camera!r}; expected 'wrist' or 'base'."
+            )
+        _configure_camera_timeout(client, self.args.camera_timeout_ms)
+        return client
+
+    def _close_client(self) -> None:
+        if self._client is not None:
+            _close_camera_client(self._client)
+            self._client = None
+
+    def _reconnect_after_failure(self, exc: Exception) -> None:
+        self._failures += 1
+        if self._failures % 50 == 1:
+            print(
+                f"WARNING: remote camera {self.camera!r} polling failed; "
+                f"reconnecting and keeping last frame: {exc}"
+            )
+        self._close_client()
+        time.sleep(0.1)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                if self._client is None:
+                    self._client = self._make_client()
+                image, _depth = self._client.read(IMAGE_SIZE)
+                image = np.asarray(image, dtype=np.uint8)
+                if image.shape != IMAGE_SHAPE:
+                    raise ValueError(
+                        f"Camera {self.camera!r} returned {image.shape}; "
+                        f"expected {IMAGE_SHAPE}"
+                    )
+                with self._lock:
+                    self._frame = image.copy()
+                    self._frame_time_monotonic = time.monotonic()
+                self._first_frame_event.set()
+                self._failures = 0
+                if self.args.camera_poll_period_s > 0:
+                    time.sleep(self.args.camera_poll_period_s)
+            except (zmq.ZMQError, ValueError) as exc:
+                self._reconnect_after_failure(exc)
 
 
-def _make_camera_clients(args: Args) -> Dict[str, ZMQClientCamera]:
-    return {camera: _make_camera_client(args, camera) for camera in args.cameras}
+def _make_camera_pollers(args: Args) -> Dict[str, RemoteCameraPoller]:
+    pollers = {camera: RemoteCameraPoller(camera, args) for camera in args.cameras}
+    for poller in pollers.values():
+        poller.start()
+    return pollers
+
+
+def _close_camera_pollers(camera_pollers: Dict[str, RemoteCameraPoller]) -> None:
+    for poller in camera_pollers.values():
+        poller.stop()
 
 
 def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
@@ -105,45 +193,18 @@ def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     return kept
 
 
-def _fallback_camera_frame(
-    camera: str, last_images: Dict[str, np.ndarray]
-) -> np.ndarray:
-    if camera in last_images:
-        return last_images[camera].copy()
-    return np.zeros(IMAGE_SHAPE, dtype=np.uint8)
-
-
 def _attach_remote_camera_frames(
     obs: Dict[str, Any],
-    camera_clients: Dict[str, ZMQClientCamera],
-    last_images: Dict[str, np.ndarray],
-    args: Args,
+    camera_pollers: Dict[str, RemoteCameraPoller],
 ) -> Dict[str, Any]:
-    for camera, client in list(camera_clients.items()):
-        try:
-            image, _depth = client.read(IMAGE_SIZE)
-            image = np.asarray(image, dtype=np.uint8)
-            if image.shape != IMAGE_SHAPE:
-                raise ValueError(
-                    f"Camera {camera!r} returned {image.shape}; expected {IMAGE_SHAPE}"
-                )
-            last_images[camera] = image
-        except (zmq.ZMQError, ValueError) as exc:
-            print(
-                f"WARNING: remote camera {camera!r} read failed; using "
-                f"{'last frame' if camera in last_images else 'black placeholder'} "
-                f"and reconnecting camera: {exc}"
-            )
-            _close_camera_client(client)
-            camera_clients[camera] = _make_camera_client(args, camera)
-            image = _fallback_camera_frame(camera, last_images)
-        obs[f"{camera}_rgb"] = image
+    for camera, poller in camera_pollers.items():
+        obs[f"{camera}_rgb"] = poller.latest_frame()
     return obs
 
 
 def main(args: Args) -> None:
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
-    camera_clients = _make_camera_clients(args)
+    camera_pollers = _make_camera_pollers(args)
     writer = LeRobotDatasetWriter(
         root=args.lerobot_root,
         repo_id=args.lerobot_repo_id,
@@ -156,11 +217,17 @@ def main(args: Args) -> None:
     )
     recording = False
     frame_count = 0
-    last_images: Dict[str, np.ndarray] = {}
 
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
     print("Remote cameras:", args.cameras)
+    for camera, poller in camera_pollers.items():
+        if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
+            print(
+                f"WARNING: no initial frame from {camera!r} within "
+                f"{args.camera_startup_timeout_s}s; black frames will be used until "
+                "the camera responds."
+            )
 
     try:
         while True:
@@ -183,9 +250,7 @@ def main(args: Args) -> None:
                     )
 
                 obs = _copy_robot_obs(message["obs"])
-                obs = _attach_remote_camera_frames(
-                    obs, camera_clients, last_images, args
-                )
+                obs = _attach_remote_camera_frames(obs, camera_pollers)
                 writer.add_frame(obs, message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -212,7 +277,7 @@ def main(args: Args) -> None:
                 print(f"Ignoring recording stream message: {message_type}")
     finally:
         writer.finalize()
-        _close_camera_clients(camera_clients)
+        _close_camera_pollers(camera_pollers)
         receiver.close()
         print("LeRobot remote-camera stream recorder finalized")
 
