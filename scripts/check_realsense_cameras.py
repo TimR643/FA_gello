@@ -60,8 +60,8 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "Connect both cameras to this recorder machine, check USB/power, "
-            "or correct WRIST_CAMERA_ID/BASE_CAMERA_ID.",
+            "Close realsense-viewer and any old recorder/camera process, then "
+            "check USB/power or correct WRIST_CAMERA_ID/BASE_CAMERA_ID.",
             file=sys.stderr,
         )
         return 1
