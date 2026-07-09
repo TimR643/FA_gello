@@ -45,7 +45,7 @@ class Args:
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     camera_timeout_ms: int = 3000
-    camera_poll_period_s: float = 0.001
+    camera_poll_period_s: float = 0.05
     camera_startup_timeout_s: float = 5.0
 
 
@@ -71,7 +71,9 @@ class RemoteCameraPoller:
     the PULL socket accumulate old robot samples, so the video appears seconds
     behind the joint/action plots. This poller absorbs camera latency in a
     background thread and lets the recorder attach the latest available image in
-    constant time.
+    constant time. The polling rate is deliberately capped so the camera servers
+    on the Franka/Polymetis laptop are not hammered while it is controlling the
+    robot.
     """
 
     def __init__(self, camera: str, args: Args):
@@ -156,7 +158,7 @@ class RemoteCameraPoller:
                 self._first_frame_event.set()
                 self._failures = 0
                 if self.args.camera_poll_period_s > 0:
-                    time.sleep(self.args.camera_poll_period_s)
+                    self._stop_event.wait(self.args.camera_poll_period_s)
             except (zmq.ZMQError, ValueError) as exc:
                 self._reconnect_after_failure(exc)
 
@@ -204,7 +206,7 @@ def _attach_remote_camera_frames(
 
 def main(args: Args) -> None:
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
-    camera_pollers = _make_camera_pollers(args)
+    camera_pollers: Optional[Dict[str, RemoteCameraPoller]] = None
     writer = LeRobotDatasetWriter(
         root=args.lerobot_root,
         repo_id=args.lerobot_repo_id,
@@ -221,13 +223,17 @@ def main(args: Args) -> None:
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
     print("Remote cameras:", args.cameras)
-    for camera, poller in camera_pollers.items():
-        if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
-            print(
-                f"WARNING: no initial frame from {camera!r} within "
-                f"{args.camera_startup_timeout_s}s; black frames will be used until "
-                "the camera responds."
-            )
+
+    def start_camera_pollers() -> Dict[str, RemoteCameraPoller]:
+        pollers = _make_camera_pollers(args)
+        for camera, poller in pollers.items():
+            if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
+                print(
+                    f"WARNING: no initial frame from {camera!r} within "
+                    f"{args.camera_startup_timeout_s}s; black frames will be used until "
+                    "the camera responds."
+                )
+        return pollers
 
     try:
         while True:
@@ -239,6 +245,8 @@ def main(args: Args) -> None:
             if message_type == "start":
                 recording = True
                 frame_count = 0
+                if camera_pollers is None:
+                    camera_pollers = start_camera_pollers()
                 print(f"Started streamed episode at {message.get('timestamp')}")
             elif message_type == "frame":
                 if not recording:
@@ -248,6 +256,8 @@ def main(args: Args) -> None:
                         "Received frame before start marker; "
                         "starting streamed episode implicitly."
                     )
+                if camera_pollers is None:
+                    camera_pollers = start_camera_pollers()
 
                 obs = _copy_robot_obs(message["obs"])
                 obs = _attach_remote_camera_frames(obs, camera_pollers)
@@ -264,6 +274,9 @@ def main(args: Args) -> None:
                     print(f"Discarded streamed episode with {frame_count} frames")
                 recording = False
                 frame_count = 0
+                if camera_pollers is not None:
+                    _close_camera_pollers(camera_pollers)
+                    camera_pollers = None
             elif message_type == "quit":
                 if recording:
                     if confirm_episode_keep(frame_count):
@@ -272,12 +285,16 @@ def main(args: Args) -> None:
                     else:
                         writer.discard_episode()
                         print(f"Discarded streamed episode with {frame_count} frames")
+                if camera_pollers is not None:
+                    _close_camera_pollers(camera_pollers)
+                    camera_pollers = None
                 break
             else:
                 print(f"Ignoring recording stream message: {message_type}")
     finally:
         writer.finalize()
-        _close_camera_pollers(camera_pollers)
+        if camera_pollers is not None:
+            _close_camera_pollers(camera_pollers)
         receiver.close()
         print("LeRobot remote-camera stream recorder finalized")
 
