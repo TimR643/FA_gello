@@ -34,6 +34,8 @@ class GelloZMQConfig(RobotConfig):
     log_action_diagnostics_every_n: int = 10
     joint_inference_log_dir: str = "logs/inference_joint_logs"
     joint_inference_log_enabled: bool = True
+    zero_missing_camera_on_timeout: bool = True
+    max_camera_timeout_warnings: int = 3
     joint_limit_margin: float = 0.02
     action_mode: str = "absolute_joint_position"
     joint_lower: tuple[float, ...] = field(
