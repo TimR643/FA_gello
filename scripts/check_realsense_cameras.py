@@ -59,12 +59,37 @@ def _list_realsense_serials() -> list[str]:
     return serials
 
 
+def _open_streams(serials: list[str]) -> None:
+    import pyrealsense2 as rs
+
+    pipelines = []
+    try:
+        for serial in serials:
+            pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_device(serial)
+            config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            pipeline.start(config)
+            pipelines.append(pipeline)
+        for pipeline in pipelines:
+            pipeline.wait_for_frames()
+    finally:
+        for pipeline in reversed(pipelines):
+            pipeline.stop()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check that required RealSense serials are visible."
     )
     parser.add_argument("--wrist-camera-id")
     parser.add_argument("--base-camera-id")
+    parser.add_argument(
+        "--open-streams",
+        action="store_true",
+        help="Also open all expected cameras as 640x480@30 RealSense streams.",
+    )
     args = parser.parse_args()
 
     try:
@@ -103,6 +128,24 @@ def main() -> int:
         return 1
 
     print("All expected RealSense cameras are visible.")
+    if args.open_streams:
+        try:
+            _open_streams(list(expected.values()))
+        except Exception as exc:
+            print(
+                "ERROR: visible RealSense camera(s) could not be opened as "
+                f"streams by pyrealsense2: {exc!r}",
+                file=sys.stderr,
+            )
+            print(
+                "If rs-enumerate-devices sees a FRAMOS/network camera but "
+                "pyrealsense2 cannot open it, use a pyrealsense2/librealsense "
+                "build that supports that camera or run that camera through a "
+                "separate bridge/source.",
+                file=sys.stderr,
+            )
+            return 1
+        print("All expected RealSense cameras opened successfully.")
     return 0
 
 

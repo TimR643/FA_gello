@@ -84,7 +84,7 @@ else
   CHECK_BASE_ARGS=()
 fi
 if [ "${#CHECK_WRIST_ARGS[@]}" -gt 0 ] || [ "${#CHECK_BASE_ARGS[@]}" -gt 0 ]; then
-  python scripts/check_realsense_cameras.py "${CHECK_WRIST_ARGS[@]}" "${CHECK_BASE_ARGS[@]}"
+  python scripts/check_realsense_cameras.py --open-streams "${CHECK_WRIST_ARGS[@]}" "${CHECK_BASE_ARGS[@]}"
 fi
 
 if [ "$CAMERA_SOURCE" = "remote_zmq" ] || { [ "$CAMERA_SOURCE" = "mixed" ] && [ "$WRIST_CAMERA_SOURCE" = "remote_zmq" ]; }; then
