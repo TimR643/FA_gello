@@ -186,7 +186,7 @@ class RemoteCameraPoller:
         self._failures += 1
         if self._failures % 50 == 1:
             print(
-                f"WARNING: remote camera {self.camera!r} polling failed; "
+                f"WARNING: camera {self.camera!r} polling failed; "
                 f"reconnecting and keeping last frame: {exc}"
             )
         self._close_client()
@@ -267,6 +267,28 @@ def _attach_remote_camera_frames(
     return obs
 
 
+def _camera_failure_hint(camera: str, source: str, detail: str) -> str:
+    if source == "remote_zmq":
+        return (
+            f"{camera}: {detail} (remote_zmq: check HPC_CAMERA_HOST, port, "
+            "tunnel, and that the Ethernet/ZMQ camera server is running)"
+        )
+    if source == "local_realsense" and (
+        "busy" in detail.lower() or "errno=16" in detail
+    ):
+        return (
+            f"{camera}: {detail} (local_realsense: the device is busy; close "
+            "realsense-viewer/old recorder/camera server or find the holder with "
+            "fuser -v /dev/video*)"
+        )
+    if source == "local_realsense":
+        return (
+            f"{camera}: {detail} (local_realsense: check USB connection, serial "
+            "ID, permissions, and that no other process owns the camera)"
+        )
+    return f"{camera}: {detail}"
+
+
 def main(args: Args) -> None:
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
     camera_pollers: Optional[Dict[str, RemoteCameraPoller]] = None
@@ -305,7 +327,9 @@ def main(args: Args) -> None:
         for camera, poller in pollers.items():
             if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
                 detail = poller.last_error() or "no error reported by camera worker"
-                missing_frames.append(f"{camera}: {detail}")
+                missing_frames.append(
+                    _camera_failure_hint(camera, camera_sources[camera], detail)
+                )
         if missing_frames:
             _close_camera_pollers(pollers)
             raise RuntimeError(

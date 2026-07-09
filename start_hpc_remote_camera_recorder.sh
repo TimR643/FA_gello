@@ -84,6 +84,27 @@ if [ "${#CHECK_WRIST_ARGS[@]}" -gt 0 ] || [ "${#CHECK_BASE_ARGS[@]}" -gt 0 ]; th
   python scripts/check_realsense_cameras.py "${CHECK_WRIST_ARGS[@]}" "${CHECK_BASE_ARGS[@]}"
 fi
 
+if [ "$CAMERA_SOURCE" = "remote_zmq" ] || { [ "$CAMERA_SOURCE" = "mixed" ] && [ "$WRIST_CAMERA_SOURCE" = "remote_zmq" ]; }; then
+  python - <<PY
+import socket
+import sys
+
+host = "${HPC_CAMERA_HOST}"
+port = int("${WRIST_PORT}")
+try:
+    with socket.create_connection((host, port), timeout=2.0):
+        pass
+except OSError as exc:
+    print(
+        f"ERROR: wrist remote_zmq camera is not reachable at {host}:{port}. "
+        "Set HPC_CAMERA_HOST to the Ethernet camera/ZMQ host visible from this "
+        "recorder, start the wrist camera server, or configure a tunnel.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+PY
+fi
+
 python experiments/record_lerobot_stream_with_remote_cameras.py \
   --bind-hostname "$BIND_HOSTNAME" \
   --port "$RECORD_STREAM_PORT" \
