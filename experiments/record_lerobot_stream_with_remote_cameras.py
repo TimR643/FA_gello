@@ -86,6 +86,7 @@ class RemoteCameraPoller:
         self._client: Optional[Any] = None
         self._frame: Optional[np.ndarray] = None
         self._frame_time_monotonic: Optional[float] = None
+        self._last_error: Optional[str] = None
         self._failures = 0
         self._thread = threading.Thread(
             target=self._run,
@@ -104,6 +105,10 @@ class RemoteCameraPoller:
             if self._frame is None:
                 return np.zeros(IMAGE_SHAPE, dtype=np.uint8)
             return self._frame.copy()
+
+    def last_error(self) -> Optional[str]:
+        with self._lock:
+            return self._last_error
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -190,11 +195,14 @@ class RemoteCameraPoller:
                 with self._lock:
                     self._frame = image.copy()
                     self._frame_time_monotonic = time.monotonic()
+                    self._last_error = None
                 self._first_frame_event.set()
                 self._failures = 0
                 if self.args.camera_poll_period_s > 0:
                     self._stop_event.wait(self.args.camera_poll_period_s)
-            except (zmq.ZMQError, ValueError) as exc:
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = repr(exc)
                 self._reconnect_after_failure(exc)
 
 
@@ -277,13 +285,19 @@ def main(args: Args) -> None:
         if camera_source == "disabled":
             return None
         pollers = _make_camera_pollers(args)
+        missing_frames = []
         for camera, poller in pollers.items():
             if not poller.wait_for_first_frame(args.camera_startup_timeout_s):
-                print(
-                    f"WARNING: no initial frame from {camera!r} within "
-                    f"{args.camera_startup_timeout_s}s; black frames will be used until "
-                    "the camera responds."
-                )
+                detail = poller.last_error() or "no error reported by camera worker"
+                missing_frames.append(f"{camera}: {detail}")
+        if missing_frames:
+            _close_camera_pollers(pollers)
+            raise RuntimeError(
+                "Camera capture did not produce an initial frame within "
+                f"{args.camera_startup_timeout_s}s. Refusing to record black "
+                "videos. Check camera_source, USB connection, camera serial IDs, "
+                "and RealSense permissions. Details: " + "; ".join(missing_frames)
+            )
         return pollers
 
     try:
