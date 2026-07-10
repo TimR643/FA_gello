@@ -46,9 +46,11 @@ class Args:
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     camera_timeout_ms: int = 3000
+    camera_sync_mode: str = "on_frame"
     camera_poll_fps: float = 10.0
     camera_max_age_ms: float = 250.0
     camera_frame_delay_ms: float = 100.0
+    camera_frame_delay_frames: int = 1
     camera_buffer_seconds: float = 2.0
     log_sync_every: int = 50
 
@@ -180,6 +182,15 @@ def _make_camera_pollers(args: Args) -> Dict[str, RemoteCameraPoller]:
     return {camera: RemoteCameraPoller(args, camera) for camera in args.cameras}
 
 
+def _make_camera_clients(args: Args) -> Dict[str, ZMQClientCamera]:
+    return {camera: _make_camera_client(args, camera) for camera in args.cameras}
+
+
+def _close_camera_clients(camera_clients: Dict[str, ZMQClientCamera]) -> None:
+    for client in camera_clients.values():
+        _close_camera_client(client)
+
+
 def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     """Keep the small robot-state fields from a streamed observation."""
 
@@ -206,6 +217,66 @@ def _fallback_camera_frame(
     if camera in last_images:
         return last_images[camera].copy()
     return np.zeros(IMAGE_SHAPE, dtype=np.uint8)
+
+
+def _read_remote_camera_frame(
+    camera: str,
+    client: ZMQClientCamera,
+) -> np.ndarray:
+    image, _depth = client.read(IMAGE_SIZE)
+    image = np.asarray(image, dtype=np.uint8)
+    if image.shape != IMAGE_SHAPE:
+        raise ValueError(
+            f"Camera {camera!r} returned {image.shape}; expected {IMAGE_SHAPE}"
+        )
+    return image
+
+
+def _attach_on_frame_remote_camera_frames(
+    obs: Dict[str, Any],
+    camera_clients: Dict[str, ZMQClientCamera],
+    camera_frame_buffers: Dict[str, Deque[np.ndarray]],
+    last_images: Dict[str, np.ndarray],
+    args: Args,
+    frame_count: int,
+) -> Dict[str, Any]:
+    """Read cameras once per robot frame and attach a configurable older frame.
+
+    This is intentionally lower impact than background polling: no camera ZMQ
+    traffic happens while idle, while waiting for the first episode, or between
+    streamed robot frames.  Use ``camera_frame_delay_frames`` to delay images
+    when the camera appears ahead of the joints.
+    """
+
+    delay_frames = max(0, args.camera_frame_delay_frames)
+    buffer_len = delay_frames + 1
+    for camera, client in list(camera_clients.items()):
+        buffer = camera_frame_buffers.setdefault(camera, deque(maxlen=buffer_len))
+        try:
+            image = _read_remote_camera_frame(camera, client)
+            buffer.append(image)
+            if len(buffer) > delay_frames:
+                selected = buffer[0].copy()
+            else:
+                selected = _fallback_camera_frame(camera, last_images)
+            last_images[camera] = selected
+        except (zmq.ZMQError, ValueError) as exc:
+            print(
+                f"WARNING: remote camera {camera!r} read failed; using "
+                f"{'last frame' if camera in last_images else 'black placeholder'} "
+                f"and reconnecting camera: {exc}"
+            )
+            _close_camera_client(client)
+            camera_clients[camera] = _make_camera_client(args, camera)
+            selected = _fallback_camera_frame(camera, last_images)
+
+        if args.log_sync_every > 0 and frame_count % args.log_sync_every == 0:
+            print(
+                f"sync: frame={frame_count} camera={camera} mode=on_frame "
+                f"delay_frames={delay_frames} buffered_frames={len(buffer)}"
+            )
+        obs[f"{camera}_rgb"] = selected
+    return obs
 
 
 def _attach_buffered_remote_camera_frames(
@@ -260,10 +331,21 @@ def _attach_buffered_remote_camera_frames(
 
 
 def main(args: Args) -> None:
+    if args.camera_sync_mode not in {"on_frame", "background"}:
+        raise ValueError(
+            "camera_sync_mode must be 'on_frame' or 'background', got "
+            f"{args.camera_sync_mode!r}"
+        )
+
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
-    camera_pollers = _make_camera_pollers(args)
-    for poller in camera_pollers.values():
-        poller.start()
+    camera_pollers: Dict[str, RemoteCameraPoller] = {}
+    camera_clients: Dict[str, ZMQClientCamera] = {}
+    if args.camera_sync_mode == "background":
+        camera_pollers = _make_camera_pollers(args)
+        for poller in camera_pollers.values():
+            poller.start()
+    else:
+        camera_clients = _make_camera_clients(args)
     writer = LeRobotDatasetWriter(
         root=args.lerobot_root,
         repo_id=args.lerobot_repo_id,
@@ -277,15 +359,24 @@ def main(args: Args) -> None:
     recording = False
     frame_count = 0
     last_images: Dict[str, np.ndarray] = {}
+    camera_frame_buffers: Dict[str, Deque[np.ndarray]] = {}
 
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
     print("Remote cameras:", args.cameras)
-    print(
-        "Remote camera polling:",
-        f"{args.camera_poll_fps} FPS, camera delay {args.camera_frame_delay_ms} ms, "
-        f"stale warning after {args.camera_max_age_ms} ms",
-    )
+    print("Remote camera sync mode:", args.camera_sync_mode)
+    if args.camera_sync_mode == "background":
+        print(
+            "Remote camera polling:",
+            f"{args.camera_poll_fps} FPS, camera delay {args.camera_frame_delay_ms} ms, "
+            f"stale warning after {args.camera_max_age_ms} ms",
+        )
+    else:
+        print(
+            "Remote camera on-frame reads:",
+            f"delay {args.camera_frame_delay_frames} frame(s); "
+            "no background camera polling",
+        )
 
     try:
         while True:
@@ -309,14 +400,24 @@ def main(args: Args) -> None:
                     )
 
                 obs = _copy_robot_obs(message["obs"])
-                obs = _attach_buffered_remote_camera_frames(
-                    obs,
-                    camera_pollers,
-                    last_images,
-                    args,
-                    frame_count,
-                    message_received_s,
-                )
+                if args.camera_sync_mode == "background":
+                    obs = _attach_buffered_remote_camera_frames(
+                        obs,
+                        camera_pollers,
+                        last_images,
+                        args,
+                        frame_count,
+                        message_received_s,
+                    )
+                else:
+                    obs = _attach_on_frame_remote_camera_frames(
+                        obs,
+                        camera_clients,
+                        camera_frame_buffers,
+                        last_images,
+                        args,
+                        frame_count,
+                    )
                 writer.add_frame(obs, message["action"])
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -344,6 +445,7 @@ def main(args: Args) -> None:
     finally:
         writer.finalize()
         _close_camera_pollers(camera_pollers)
+        _close_camera_clients(camera_clients)
         receiver.close()
         print("LeRobot remote-camera stream recorder finalized")
 

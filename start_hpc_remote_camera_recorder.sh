@@ -25,9 +25,11 @@ LEROBOT_TASK="${LEROBOT_TASK:-pick up the red rectangle and go above the necessa
 LEROBOT_ROBOT_TYPE="${LEROBOT_ROBOT_TYPE:-panda_gello}"
 LEROBOT_BATCH_ENCODING_SIZE="${LEROBOT_BATCH_ENCODING_SIZE:-1}"
 CAMERA_TIMEOUT_MS="${CAMERA_TIMEOUT_MS:-3000}"
+CAMERA_SYNC_MODE="${CAMERA_SYNC_MODE:-on_frame}"
 CAMERA_POLL_FPS="${CAMERA_POLL_FPS:-10}"
 CAMERA_MAX_AGE_MS="${CAMERA_MAX_AGE_MS:-250}"
 CAMERA_FRAME_DELAY_MS="${CAMERA_FRAME_DELAY_MS:-100}"
+CAMERA_FRAME_DELAY_FRAMES="${CAMERA_FRAME_DELAY_FRAMES:-1}"
 CAMERA_BUFFER_SECONDS="${CAMERA_BUFFER_SECONDS:-2}"
 LOG_SYNC_EVERY="${LOG_SYNC_EVERY:-50}"
 
@@ -38,8 +40,10 @@ Starting HPC remote-camera recorder
   Laptop camera host:$HPC_CAMERA_HOST
   Wrist/Base ports:  $WRIST_PORT / $BASE_PORT
   Camera timeout:    ${CAMERA_TIMEOUT_MS} ms
+  Camera sync mode:  ${CAMERA_SYNC_MODE}
   Camera poll FPS:   ${CAMERA_POLL_FPS}
   Camera delay:      ${CAMERA_FRAME_DELAY_MS} ms
+  Camera frame delay:${CAMERA_FRAME_DELAY_FRAMES} frame(s)
   Camera buffer:     ${CAMERA_BUFFER_SECONDS} s
   Camera stale warn: ${CAMERA_MAX_AGE_MS} ms
   Dataset root:      $LEROBOT_ROOT
@@ -67,8 +71,10 @@ python experiments/record_lerobot_stream_with_remote_cameras.py \
   --lerobot-streaming-encoding \
   --lerobot-batch-encoding-size "$LEROBOT_BATCH_ENCODING_SIZE" \
   --camera-timeout-ms "$CAMERA_TIMEOUT_MS" \
+  --camera-sync-mode "$CAMERA_SYNC_MODE" \
   --camera-poll-fps "$CAMERA_POLL_FPS" \
   --camera-max-age-ms "$CAMERA_MAX_AGE_MS" \
   --camera-frame-delay-ms "$CAMERA_FRAME_DELAY_MS" \
+  --camera-frame-delay-frames "$CAMERA_FRAME_DELAY_FRAMES" \
   --camera-buffer-seconds "$CAMERA_BUFFER_SECONDS" \
   --log-sync-every "$LOG_SYNC_EVERY"
