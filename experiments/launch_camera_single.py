@@ -10,11 +10,23 @@ class Args:
     hostname: str = "127.0.0.1"
     port: int = 5000
     camera_id: str = "6CD1460304A5"
+    wait_timeout_ms: int = 10000
+    max_read_retries: int = 2
+    reset_on_timeout: bool = True
+    keep_stream_alive: bool = False
+    first_frame_timeout_ms: int = 15000
 
 
 def main(args: Args):
     print(f"Opening RealSense camera {args.camera_id}", flush=True)
-    camera = RealSenseCamera(args.camera_id)
+    camera = RealSenseCamera(
+        args.camera_id,
+        wait_timeout_ms=args.wait_timeout_ms,
+        max_read_retries=args.max_read_retries,
+        reset_on_timeout=args.reset_on_timeout,
+        keep_stream_alive=args.keep_stream_alive,
+        first_frame_timeout_ms=args.first_frame_timeout_ms,
+    )
     print("Camera opened successfully", flush=True)
 
     server = ZMQServerCamera(camera, port=args.port, host=args.hostname)

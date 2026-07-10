@@ -67,3 +67,6 @@ class ZMQServerCamera:
     def stop(self) -> None:
         """Signal the server to stop serving."""
         self._stop_event.set()
+        close = getattr(self._camera, "close", None)
+        if close is not None:
+            close()
