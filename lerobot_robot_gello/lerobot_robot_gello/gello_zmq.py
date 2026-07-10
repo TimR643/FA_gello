@@ -31,6 +31,8 @@ class GelloZMQ(Robot):
         self.config = config
         self.robot: ZMQClientRobot | None = None
         self.cameras: dict[str, ZMQClientCamera] = {}
+        self._camera_host: str | None = None
+        self._last_camera_images: dict[str, np.ndarray] = {}
         self._is_connected = False
         self._last_state: np.ndarray | None = None
         self._action_count = 0
@@ -108,17 +110,12 @@ class GelloZMQ(Robot):
         )
         self._configure_zmq_timeout(self.robot, name="robot")
         camera_host = self.config.camera_host or self.config.robot_host
+        self._camera_host = camera_host
         for camera in self._camera_names():
             if camera == "wrist":
-                self.cameras[camera] = ZMQClientCamera(
-                    port=self.config.wrist_camera_port, host=camera_host
-                )
-                self._configure_zmq_timeout(self.cameras[camera], name="wrist camera")
+                self._connect_camera(camera, camera_host)
             elif camera == "base":
-                self.cameras[camera] = ZMQClientCamera(
-                    port=self.config.base_camera_port, host=camera_host
-                )
-                self._configure_zmq_timeout(self.cameras[camera], name="base camera")
+                self._connect_camera(camera, camera_host)
             else:
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
@@ -132,6 +129,74 @@ class GelloZMQ(Robot):
         socket.setsockopt(zmq.RCVTIMEO, self.config.zmq_timeout_ms)
         socket.setsockopt(zmq.SNDTIMEO, self.config.zmq_timeout_ms)
         socket.setsockopt(zmq.LINGER, 0)
+
+    def _camera_port(self, camera: str) -> int:
+        if camera == "wrist":
+            return self.config.wrist_camera_port
+        if camera == "base":
+            return self.config.base_camera_port
+        raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
+
+    def _connect_camera(self, camera: str, host: str | None = None) -> None:
+        camera_host = (
+            host
+            or self._camera_host
+            or self.config.camera_host
+            or self.config.robot_host
+        )
+        client = ZMQClientCamera(port=self._camera_port(camera), host=camera_host)
+        self._configure_zmq_timeout(client, name=f"{camera} camera")
+        self.cameras[camera] = client
+
+    def _close_camera_client(self, camera: str) -> None:
+        client = self.cameras.get(camera)
+        if client is None:
+            return
+        socket = getattr(client, "_socket", None)
+        context = getattr(client, "_context", None)
+        if socket is not None:
+            socket.close()
+        if context is not None:
+            context.term()
+
+    def _close_camera_clients(self) -> None:
+        for camera in list(self.cameras):
+            self._close_camera_client(camera)
+
+    def _fallback_camera_image(self, camera: str) -> np.ndarray:
+        if camera in self._last_camera_images:
+            return self._last_camera_images[camera].copy()
+        return np.zeros(
+            (self.config.image_height, self.config.image_width, 3),
+            dtype=np.uint8,
+        )
+
+    def _read_camera_image(self, camera: str) -> np.ndarray:
+        try:
+            rgb, _depth = self.cameras[camera].read(
+                (self.config.image_width, self.config.image_height)
+            )
+            image = np.asarray(rgb)
+            if image.shape != (self.config.image_height, self.config.image_width, 3):
+                raise ValueError(
+                    f"Camera {camera!r} returned {image.shape}; expected "
+                    f"{(self.config.image_height, self.config.image_width, 3)}"
+                )
+            self._last_camera_images[camera] = image
+            return image
+        except Exception as exc:
+            if not self.config.camera_timeout_fallback_enabled:
+                raise
+            image = self._fallback_camera_image(camera)
+            print(
+                f"[gello_zmq] WARNING: camera {camera!r} read failed; using "
+                f"{'last frame' if camera in self._last_camera_images else 'black placeholder'} "
+                f"and reconnecting client: {exc}",
+                flush=True,
+            )
+            self._close_camera_client(camera)
+            self._connect_camera(camera)
+            return image
 
     def _preflight_robot_connection(self) -> None:
         if self.robot is None:
@@ -151,7 +216,9 @@ class GelloZMQ(Robot):
         if self.robot is not None:
             self.robot.close()
         self.robot = None
+        self._close_camera_clients()
         self.cameras = {}
+        self._last_camera_images = {}
         self._is_connected = False
 
     def _open_joint_inference_log(self) -> None:
@@ -254,17 +321,7 @@ class GelloZMQ(Robot):
                 )
                 continue
             live_camera = live_camera_names[policy_camera_index]
-            client = self.cameras[live_camera]
-            rgb, _depth = client.read(
-                (self.config.image_width, self.config.image_height)
-            )
-            image = np.asarray(rgb)
-            if image.shape != (self.config.image_height, self.config.image_width, 3):
-                raise ValueError(
-                    f"Camera {live_camera!r} returned {image.shape}; expected "
-                    f"{(self.config.image_height, self.config.image_width, 3)}"
-                )
-            obs[policy_camera] = image
+            obs[policy_camera] = self._read_camera_image(live_camera)
         return obs
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:

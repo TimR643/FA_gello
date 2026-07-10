@@ -24,28 +24,51 @@ class RealSenseCamera(CameraDriver):
     def __repr__(self) -> str:
         return f"RealSenseCamera(device_id={self._device_id})"
 
-    def __init__(self, device_id: Optional[str] = None, flip: bool = False):
+    def __init__(
+        self,
+        device_id: Optional[str] = None,
+        flip: bool = False,
+        wait_timeout_ms: int = 10000,
+        max_read_retries: int = 2,
+        reset_on_timeout: bool = True,
+    ):
         import pyrealsense2 as rs
 
         self._device_id = device_id
+        self._flip = flip
+        self._wait_timeout_ms = wait_timeout_ms
+        self._max_read_retries = max_read_retries
+        self._reset_on_timeout = reset_on_timeout
+        self._rs = rs
+        self._config = self._make_config()
+        self._pipeline = rs.pipeline()
+        self._start_pipeline()
 
-        if device_id is None:
-            ctx = rs.context()
+    def _make_config(self):
+        config = self._rs.config()
+        if self._device_id is not None:
+            config.enable_device(self._device_id)
+        config.enable_stream(self._rs.stream.depth, 640, 480, self._rs.format.z16, 30)
+        config.enable_stream(self._rs.stream.color, 640, 480, self._rs.format.bgr8, 30)
+        return config
+
+    def _start_pipeline(self) -> None:
+        if self._device_id is None:
+            ctx = self._rs.context()
             devices = ctx.query_devices()
             for dev in devices:
                 dev.hardware_reset()
             time.sleep(2)
-            self._pipeline = rs.pipeline()
-            config = rs.config()
-        else:
-            self._pipeline = rs.pipeline()
-            config = rs.config()
-            config.enable_device(device_id)
+        self._pipeline.start(self._config)
 
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        self._pipeline.start(config)
-        self._flip = flip
+    def _restart_pipeline(self) -> None:
+        try:
+            self._pipeline.stop()
+        except RuntimeError:
+            pass
+        time.sleep(0.5)
+        self._pipeline = self._rs.pipeline()
+        self._start_pipeline()
 
     def read(
         self,
@@ -63,7 +86,25 @@ class RealSenseCamera(CameraDriver):
         """
         import cv2
 
-        frames = self._pipeline.wait_for_frames()
+        last_error: Exception | None = None
+        for attempt in range(self._max_read_retries + 1):
+            try:
+                frames = self._pipeline.wait_for_frames(self._wait_timeout_ms)
+                break
+            except RuntimeError as exc:
+                last_error = exc
+                if not self._reset_on_timeout or attempt >= self._max_read_retries:
+                    raise
+                print(
+                    f"RealSense read timed out after {self._wait_timeout_ms} ms; "
+                    f"restarting pipeline (attempt {attempt + 1}/"
+                    f"{self._max_read_retries})",
+                    flush=True,
+                )
+                self._restart_pipeline()
+        else:
+            raise RuntimeError("RealSense read failed") from last_error
+
         color_frame = frames.get_color_frame()
         color_image = np.asanyarray(color_frame.get_data())
         depth_frame = frames.get_depth_frame()
