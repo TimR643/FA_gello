@@ -20,6 +20,8 @@ class Args:
     wait_timeout_ms: int = 10000
     max_read_retries: int = 2
     reset_on_timeout: bool = True
+    keep_stream_alive: bool = True
+    first_frame_timeout_ms: int = 15000
 
 
 def launch_server(
@@ -30,6 +32,8 @@ def launch_server(
     wait_timeout_ms: int,
     max_read_retries: int,
     reset_on_timeout: bool,
+    keep_stream_alive: bool,
+    first_frame_timeout_ms: int,
 ):
     print(f"Opening {name} camera {camera_id}", flush=True)
     camera = RealSenseCamera(
@@ -37,6 +41,8 @@ def launch_server(
         wait_timeout_ms=wait_timeout_ms,
         max_read_retries=max_read_retries,
         reset_on_timeout=reset_on_timeout,
+        keep_stream_alive=keep_stream_alive,
+        first_frame_timeout_ms=first_frame_timeout_ms,
     )
 
     server = ZMQServerCamera(camera, port=port, host=hostname)
@@ -60,6 +66,8 @@ def main(args: Args):
                 args.wait_timeout_ms,
                 args.max_read_retries,
                 args.reset_on_timeout,
+                args.keep_stream_alive,
+                args.first_frame_timeout_ms,
             ),
         ),
         Process(
@@ -72,6 +80,8 @@ def main(args: Args):
                 args.wait_timeout_ms,
                 args.max_read_retries,
                 args.reset_on_timeout,
+                args.keep_stream_alive,
+                args.first_frame_timeout_ms,
             ),
         ),
     ]

@@ -13,6 +13,8 @@ class Args:
     wait_timeout_ms: int = 10000
     max_read_retries: int = 2
     reset_on_timeout: bool = True
+    keep_stream_alive: bool = True
+    first_frame_timeout_ms: int = 15000
 
 
 def main(args: Args):
@@ -22,6 +24,8 @@ def main(args: Args):
         wait_timeout_ms=args.wait_timeout_ms,
         max_read_retries=args.max_read_retries,
         reset_on_timeout=args.reset_on_timeout,
+        keep_stream_alive=args.keep_stream_alive,
+        first_frame_timeout_ms=args.first_frame_timeout_ms,
     )
     print("Camera opened successfully", flush=True)
 
