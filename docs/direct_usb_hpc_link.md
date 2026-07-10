@@ -19,6 +19,20 @@ The wrapper scripts assume this static USB-link addressing by default:
 
 You can override both with `LAPTOP_USB_IP` and `HPC_USB_IP`.
 
+
+## Find the USB-link IP addresses
+
+Run this helper on both machines after plugging in the USB/USB-C cable:
+
+```bash
+./scripts/find_usb_network_link.sh
+```
+
+Look for interfaces named like `usb*`, `enx*`, or `enp...u...`. If no IPv4
+address is shown, compare `ip -br link` before and after plugging in the cable or
+configure static addresses such as `10.66.0.1/24` on the Franka laptop and
+`10.66.0.2/24` on the HPC.
+
 ## Remote-camera recording workflow
 
 On the HPC:
@@ -51,6 +65,16 @@ HPC_USB_IP=10.66.0.2 LAPTOP_USB_IP=10.66.0.1 \
 
 Then run the HPC rollout with `ROBOT_HOST=127.0.0.1` and, unless you intentionally
 separate camera routing, leave `CAMERA_HOST` unset so it also uses the tunnel.
+
+
+## SSH traffic during recording
+
+An idle SSH shell usually produces negligible traffic and should not by itself
+overload the camera network. It can still contribute to camera timeouts if it
+runs over the same switch/interface as the cameras and carries heavy traffic, for
+example `scp`/`rsync`, X11 forwarding, large logs, port forwards, or a policy
+rollout tunnel. Prefer running laptop<->HPC SSH over the direct USB link, or keep
+heavy transfers stopped during recording.
 
 ## Checks
 
