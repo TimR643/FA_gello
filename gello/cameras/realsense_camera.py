@@ -32,7 +32,7 @@ class RealSenseCamera(CameraDriver):
         wait_timeout_ms: int = 10000,
         max_read_retries: int = 2,
         reset_on_timeout: bool = True,
-        keep_stream_alive: bool = True,
+        keep_stream_alive: bool = False,
         first_frame_timeout_ms: int = 15000,
     ):
         import pyrealsense2 as rs
