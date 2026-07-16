@@ -105,3 +105,59 @@ def test_gello_zmq_action_diagnostics_reports_delta_clipping(capsys):
     output = capsys.readouterr().out
     assert "delta-clipped" in output
     assert "joint_0.pos" in output
+
+
+def test_gello_zmq_camera_timeout_returns_last_frame(monkeypatch):
+    import zmq
+
+    from lerobot_robot_gello.config_gello_zmq import GelloZMQConfig
+    from lerobot_robot_gello.gello_zmq import GelloZMQ
+
+    robot = GelloZMQ(
+        GelloZMQConfig(
+            image_height=2,
+            image_width=3,
+            camera_read_retries=0,
+            camera_timeout_fallback="last_then_black",
+        )
+    )
+    last_frame = np.full((2, 3, 3), 7, dtype=np.uint8)
+    robot._last_camera_images["wrist"] = last_frame
+
+    class TimeoutCamera:
+        def read(self, _image_size):
+            raise zmq.Again()
+
+    robot.cameras["wrist"] = TimeoutCamera()
+    monkeypatch.setattr(robot, "_reset_camera_client", lambda _camera: None)
+
+    image = robot._read_camera_image("wrist")
+
+    assert image is last_frame
+
+
+def test_gello_zmq_camera_timeout_returns_black_without_last_frame(monkeypatch):
+    import zmq
+
+    from lerobot_robot_gello.config_gello_zmq import GelloZMQConfig
+    from lerobot_robot_gello.gello_zmq import GelloZMQ
+
+    robot = GelloZMQ(
+        GelloZMQConfig(
+            image_height=2,
+            image_width=3,
+            camera_read_retries=0,
+            camera_timeout_fallback="last_then_black",
+        )
+    )
+
+    class TimeoutCamera:
+        def read(self, _image_size):
+            raise zmq.Again()
+
+    robot.cameras["wrist"] = TimeoutCamera()
+    monkeypatch.setattr(robot, "_reset_camera_client", lambda _camera: None)
+
+    image = robot._read_camera_image("wrist")
+
+    np.testing.assert_array_equal(image, np.zeros((2, 3, 3), dtype=np.uint8))

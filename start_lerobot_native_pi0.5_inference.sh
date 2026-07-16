@@ -30,7 +30,7 @@ cd "$REPO_DIR"
 
 : "${TASK:=pick up the red rectangle and go above the necessary height}"
 : "${DURATION:=50}"
-: "${FPS:=10}"
+: "${FPS:=5}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${DEVICE:=cuda}"
 : "${ROBOT_HOST:=127.0.0.1}"
@@ -38,20 +38,41 @@ cd "$REPO_DIR"
 : "${CAMERA_HOST:=$ROBOT_HOST}"
 : "${WRIST_CAMERA_PORT:=5000}"
 : "${BASE_CAMERA_PORT:=5001}"
-: "${ZMQ_TIMEOUT_MS:=3000}"
+: "${ZMQ_TIMEOUT_MS:=5000}"
+: "${CAMERA_READ_RETRIES:=1}"
+: "${CAMERA_TIMEOUT_FALLBACK:=last_then_black}"
 : "${MAX_JOINT_DELTA:=0.2}"
 : "${MAX_GRIPPER_DELTA:=1.0}"
 : "${ACTION_MODE:=absolute_joint_position}"
 : "${INFERENCE_TYPE:=rtc}"
-: "${RTC_EXECUTION_HORIZON:=10}"
-: "${RTC_MAX_GUIDANCE_WEIGHT:=5.0}"
+: "${RTC_EXECUTION_HORIZON:=4}"
+: "${RTC_MAX_GUIDANCE_WEIGHT:=1.0}"
 : "${RTC_PREFIX_ATTENTION_SCHEDULE:=}"
-: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=1}"
-: "${JOINT_INFERENCE_LOG_ENABLED:=true}"
+: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
+: "${JOINT_INFERENCE_LOG_ENABLED:=false}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
 : "${RECORD_LEROBOT:=false}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
+
+# Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
+# All values are still overridable by exporting them before launching.
+: "${PI05_LIMIT_CPU_THREADS:=true}"
+: "${PI05_CPU_THREADS:=1}"
+: "${TOKENIZERS_PARALLELISM:=false}"
+: "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+: "${PI05_OFFLINE_LOAD:=true}"
+
+if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$PI05_CPU_THREADS}"
+fi
+
+export TOKENIZERS_PARALLELISM
+export PYTORCH_CUDA_ALLOC_CONF
 
 usage() {
   cat <<EOF_USAGE
@@ -63,6 +84,7 @@ Model source:
   HF_REVISION         Hub branch/tag/commit. Default: main
   HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
   CKPT                Optional local pretrained_model path; bypasses Hub lookup
+  LOCAL_MODEL_DIR     Optional local training/output root searched before Hub
 
 Examples:
   $0
@@ -71,7 +93,7 @@ Examples:
 
 Rollout overrides:
   TASK                 Task prompt
-  FPS                  Default: 10
+  FPS                  Default: 5 (conservative for Pi0.5)
   DURATION             Default: 50
   DEVICE               Default: cuda
 
@@ -85,14 +107,21 @@ Camera mapping:
 
 Inference:
   INFERENCE_TYPE             rtc or sync. Default: rtc
-  RTC_EXECUTION_HORIZON      Default: 10
-  RTC_MAX_GUIDANCE_WEIGHT    Default: 5.0
+  RTC_EXECUTION_HORIZON      Default: 4 (lower latency/load)
+  RTC_MAX_GUIDANCE_WEIGHT    Default: 1.0 (lower compute load)
   RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
+  ZMQ_TIMEOUT_MS             Default: 5000; avoids false camera timeouts during slow Pi0.5 steps
+  CAMERA_READ_RETRIES        Default: 1; retry after resetting a timed-out camera socket
+  CAMERA_TIMEOUT_FALLBACK    Default: last_then_black; keep rollout alive on camera hiccups
 
 Safety:
   MAX_JOINT_DELTA       Default: 0.2
   MAX_GRIPPER_DELTA     Default: 1.0
   ACTION_MODE           Default: absolute_joint_position
+  PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
+  PI05_CPU_THREADS      Default: 1
+  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
+  PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
 EOF_USAGE
 }
 
@@ -210,15 +239,11 @@ if "pretrained_revision" not in config:
 
 removed_value = config.pop("pretrained_revision")
 
+default_cache_root = policy_dir.parent / ".pi05_compat"
 cache_root = Path(
     os.environ.get(
         "PI05_COMPAT_CACHE_DIR",
-        str(
-            Path.home()
-            / ".cache"
-            / "lerobot"
-            / "pi05_compat"
-        ),
+        str(default_cache_root),
     )
 ).expanduser()
 
@@ -296,7 +321,8 @@ PY_COMPAT
 # Wenn CKPT nicht explizit gesetzt wurde, wird zuerst das lokal
 # heruntergeladene Modell verwendet.
 if [[ -z "$CKPT" ]]; then
-  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR/checkpoints/$HF_CHECKPOINT/pretrained_model"
+  LOCAL_MODEL_DIR_RESOLVED="${LOCAL_MODEL_DIR:-$HOME/lerobot_outputs/train/${HF_MODEL_REPO##*/}}"
+  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR_RESOLVED/checkpoints/$HF_CHECKPOINT/pretrained_model"
 
   if [[ -f "$LOCAL_CKPT_CANDIDATE/config.json" ]]; then
     CKPT="$LOCAL_CKPT_CANDIDATE"
@@ -348,6 +374,12 @@ ORIGINAL_CKPT="$CKPT"
 CKPT="$(prepare_compatible_policy_dir "$CKPT")"
 
 POLICY_CONFIG_PATH="$CKPT/config.json"
+
+if [[ "$PI05_OFFLINE_LOAD" == "true" ]]; then
+  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+fi
 
 if [[ "$CKPT" != "$ORIGINAL_CKPT" ]]; then
   MODEL_SOURCE="${MODEL_SOURCE}-pi05-config-compat"
@@ -500,6 +532,18 @@ if [[ -z "$POLICY_CAMERA_NAMES_RESOLVED" ]]; then
   exit 1
 fi
 
+if [[ "$DEVICE" == cuda* ]]; then
+  python - <<'PY_CUDA_CHECK'
+try:
+    import torch
+except Exception as exc:
+    raise SystemExit(f"FEHLT: DEVICE=cuda, aber torch kann nicht importiert werden: {exc}")
+
+if not torch.cuda.is_available():
+    raise SystemExit("FEHLT: DEVICE=cuda, aber torch.cuda.is_available() ist false. Setze DEVICE=cpu oder repariere CUDA.")
+PY_CUDA_CHECK
+fi
+
 if [[ "$RECORD_LEROBOT" == "true" ]]; then
   ROLLOUT_STRATEGY="${STRATEGY_TYPE:-sentry}"
 else
@@ -539,11 +583,25 @@ ROBOT_POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 LIVE_CAMERA_NAMES=$LIVE_CAMERA_NAMES_RESOLVED
 INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS=$INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS
 INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK=$INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK
+ZMQ_TIMEOUT_MS=$ZMQ_TIMEOUT_MS
+CAMERA_READ_RETRIES=$CAMERA_READ_RETRIES
+CAMERA_TIMEOUT_FALLBACK=$CAMERA_TIMEOUT_FALLBACK
 MAX_JOINT_DELTA=$MAX_JOINT_DELTA
 MAX_GRIPPER_DELTA=$MAX_GRIPPER_DELTA
 ACTION_MODE=$ACTION_MODE
 JOINT_INFERENCE_LOG_ENABLED=$JOINT_INFERENCE_LOG_ENABLED
 JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
+LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
+PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
+PI05_CPU_THREADS=$PI05_CPU_THREADS
+OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
+MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
+OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
+PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF
+PI05_OFFLINE_LOAD=$PI05_OFFLINE_LOAD
+HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-<unset>}
+TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-<unset>}
+ORIGINAL_CKPT=$ORIGINAL_CKPT
 EOF_CONFIG
 
 cmd=(
@@ -561,6 +619,8 @@ cmd=(
   --robot.wrist_camera_port="$WRIST_CAMERA_PORT"
   --robot.base_camera_port="$BASE_CAMERA_PORT"
   --robot.zmq_timeout_ms="$ZMQ_TIMEOUT_MS"
+  --robot.camera_read_retries="$CAMERA_READ_RETRIES"
+  --robot.camera_timeout_fallback="$CAMERA_TIMEOUT_FALLBACK"
   --robot.camera_names="$LIVE_CAMERA_NAMES_RESOLVED"
   --robot.policy_camera_names="$POLICY_CAMERA_NAMES_RESOLVED"
   --robot.max_joint_delta="$MAX_JOINT_DELTA"
