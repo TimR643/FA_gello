@@ -13,7 +13,7 @@ cd "$REPO_DIR"
 
 export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/pick_rectangle_go_up_smolvlabase/checkpoints/060000/pretrained_model}"
 : "${TASK:=pick up the red rectangle and go above the necessary hight}"
-: "${DURATION:=50}"
+: "${DURATION:=120}"
 : "${NUM_EPISODES:=1}"
 : "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"

@@ -17,14 +17,14 @@ HPC_CAMERA_HOST="${HPC_CAMERA_HOST:-127.0.0.1}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
 
-LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/push_white_cube_v4}"
-LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/push_white_cube_v4}"
+LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/push_white_cube_right_v6}"
+LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/push_white_cube_right_v6}"
 LEROBOT_FPS="${LEROBOT_FPS:-10}"
 # go_left_right_even_...: "go right if a red block is detected, go left if a green bock is detected"
 # pick up the red rectangle and go above the necessary hight
 #cube pushing: Push the white cube straight forward. -> geradeaus
 #              Push the white cube forward, then guide it right through the opening. -> nach rechts
-LEROBOT_TASK="${LEROBOT_TASK:-Push the white cube straight forward.}"
+LEROBOT_TASK="${LEROBOT_TASK:-Push the white cube forward, then guide it right through the opening.}"
 LEROBOT_ROBOT_TYPE="${LEROBOT_ROBOT_TYPE:-panda_gello}"
 LEROBOT_BATCH_ENCODING_SIZE="${LEROBOT_BATCH_ENCODING_SIZE:-1}"
 CAMERA_TIMEOUT_MS="${CAMERA_TIMEOUT_MS:-3000}"

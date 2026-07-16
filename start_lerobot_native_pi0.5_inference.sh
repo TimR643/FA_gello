@@ -61,13 +61,13 @@ Usage:
 Model source:
   HF_MODEL_REPO       Default: TimR643/pick_rectangle_go_up_pi05
   HF_REVISION         Hub branch/tag/commit. Default: main
-  HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default: 002000
+  HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
   CKPT                Optional local pretrained_model path; bypasses Hub lookup
 
 Examples:
   $0
   HF_CHECKPOINT=004000 $0
-  CKPT=/path/to/checkpoints/002000/pretrained_model $0
+  CKPT=/path/to/checkpoints/010000/pretrained_model $0
 
 Rollout overrides:
   TASK                 Task prompt
@@ -358,18 +358,9 @@ ROBOT_POLICY_CAMERA_NAMES_DEFAULT="$(
     "$INFERRED_POLICY_IMAGE_NAMES"
 )"
 
-POLICY_CAMERA_NAMES_RESOLVED="${
-  POLICY_CAMERA_NAMES:-$ROBOT_POLICY_CAMERA_NAMES_DEFAULT
-}"
+POLICY_CAMERA_NAMES_RESOLVED="${POLICY_CAMERA_NAMES:-$ROBOT_POLICY_CAMERA_NAMES_DEFAULT}"
 
-LIVE_CAMERA_NAMES_RESOLVED="${
-  LIVE_CAMERA_NAMES:-${
-    CAMERA_NAMES:-$(
-      infer_live_camera_names_from_policy_names \
-        "$POLICY_CAMERA_NAMES_RESOLVED"
-    )
-  }
-}"
+LIVE_CAMERA_NAMES_RESOLVED="${LIVE_CAMERA_NAMES:-${CAMERA_NAMES:-$(infer_live_camera_names_from_policy_names "$POLICY_CAMERA_NAMES_RESOLVED")}}"
 
 if [[ -z "$POLICY_CAMERA_NAMES_RESOLVED" ]]; then
   echo \
@@ -506,21 +497,13 @@ PY
     )"
   fi
 
-  LEROBOT_RECORD_ROOT_RESOLVED="${
-    LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME}_pi05_inference_${RUN_STAMP}
-  }"
+  LEROBOT_RECORD_ROOT_RESOLVED="${LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
 
-  LEROBOT_RECORD_REPO_ID_RESOLVED="${
-    LEROBOT_RECORD_REPO_ID:-local/rollout_${MODEL_NAME}_pi05_inference_${RUN_STAMP}
-  }"
+  LEROBOT_RECORD_REPO_ID_RESOLVED="${LEROBOT_RECORD_REPO_ID:-local/rollout_${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
 
-  LEROBOT_RECORD_FPS_RESOLVED="${
-    LEROBOT_RECORD_FPS:-$FPS
-  }"
+  LEROBOT_RECORD_FPS_RESOLVED="${LEROBOT_RECORD_FPS:-$FPS}"
 
-  LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${
-    LEROBOT_RECORD_PUSH_TO_HUB:-false
-  }"
+  LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${LEROBOT_RECORD_PUSH_TO_HUB:-false}"
 
   mkdir -p "$(dirname "$LEROBOT_RECORD_ROOT_RESOLVED")"
 

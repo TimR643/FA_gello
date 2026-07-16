@@ -16,7 +16,7 @@ set -euo pipefail
 # One-Camera-Variante wieder aktivieren.
 
 ACT_CKPT_CANDIDATES=(
-  "$HOME/lerobot_outputs/train/pick_rectangle_go_up_act_wrist_only/checkpoints/140000/pretrained_model"
+  "$HOME/lerobot_outputs/train/push_white_cube_30-30_act/checkpoints/140000/pretrained_model"
 )
 
 has_lerobot_config() {
