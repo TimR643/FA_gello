@@ -31,6 +31,8 @@ class GelloZMQ(Robot):
         self.config = config
         self.robot: ZMQClientRobot | None = None
         self.cameras: dict[str, ZMQClientCamera] = {}
+        self._last_camera_images: dict[str, np.ndarray] = {}
+        self._camera_timeout_counts: dict[str, int] = {}
         self._is_connected = False
         self._last_state: np.ndarray | None = None
         self._action_count = 0
@@ -112,22 +114,38 @@ class GelloZMQ(Robot):
             if camera.startswith("empty_camera"):
                 continue
             if camera == "wrist":
-                self.cameras[camera] = ZMQClientCamera(
-                    port=self.config.wrist_camera_port, host=camera_host
-                )
-                self._configure_zmq_timeout(self.cameras[camera], name="wrist camera")
+                self.cameras[camera] = self._make_camera_client(camera, camera_host)
             elif camera == "base":
-                self.cameras[camera] = ZMQClientCamera(
-                    port=self.config.base_camera_port, host=camera_host
-                )
-                self._configure_zmq_timeout(self.cameras[camera], name="base camera")
+                self.cameras[camera] = self._make_camera_client(camera, camera_host)
             else:
                 raise ValueError(
                     f"Unsupported GELLO camera {camera!r}; use wrist/base"
                 )
+        self._last_camera_images = {}
+        self._camera_timeout_counts = {}
         self._preflight_robot_connection()
         self._open_joint_inference_log()
         self._is_connected = True
+
+    def _camera_port(self, camera: str) -> int:
+        if camera == "wrist":
+            return self.config.wrist_camera_port
+        if camera == "base":
+            return self.config.base_camera_port
+        raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
+
+    def _make_camera_client(self, camera: str, camera_host: str) -> ZMQClientCamera:
+        client = ZMQClientCamera(port=self._camera_port(camera), host=camera_host)
+        self._configure_zmq_timeout(client, name=f"{camera} camera")
+        return client
+
+    def _reset_camera_client(self, camera: str) -> None:
+        old_client = self.cameras.get(camera)
+        old_socket = getattr(old_client, "_socket", None)
+        if old_socket is not None:
+            old_socket.close(0)
+        camera_host = self.config.camera_host or self.config.robot_host
+        self.cameras[camera] = self._make_camera_client(camera, camera_host)
 
     def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
         socket = getattr(client, "_socket", None)
@@ -155,7 +173,13 @@ class GelloZMQ(Robot):
         if self.robot is not None:
             self.robot.close()
         self.robot = None
+        for camera in self.cameras.values():
+            socket = getattr(camera, "_socket", None)
+            if socket is not None:
+                socket.close(0)
         self.cameras = {}
+        self._last_camera_images = {}
+        self._camera_timeout_counts = {}
         self._is_connected = False
 
     def _open_joint_inference_log(self) -> None:
@@ -268,18 +292,56 @@ class GelloZMQ(Robot):
                 )
                 continue
             live_camera = live_camera_names[live_camera_index]
-            client = self.cameras[live_camera]
-            rgb, _depth = client.read(
-                (self.config.image_width, self.config.image_height)
-            )
-            image = np.asarray(rgb)
-            if image.shape != (self.config.image_height, self.config.image_width, 3):
-                raise ValueError(
-                    f"Camera {live_camera!r} returned {image.shape}; expected "
-                    f"{(self.config.image_height, self.config.image_width, 3)}"
-                )
-            obs[policy_camera] = image
+            obs[policy_camera] = self._read_camera_image(live_camera)
         return obs
+
+    def _read_camera_image(self, camera: str) -> np.ndarray:
+        retries = max(0, int(self.config.camera_read_retries))
+        image_size = (self.config.image_width, self.config.image_height)
+        for attempt in range(retries + 1):
+            client = self.cameras[camera]
+            try:
+                rgb, _depth = client.read(image_size)
+            except zmq.Again:
+                self._camera_timeout_counts[camera] = (
+                    self._camera_timeout_counts.get(camera, 0) + 1
+                )
+                count = self._camera_timeout_counts[camera]
+                if count == 1 or count % 10 == 0:
+                    print(
+                        f"[gello_zmq] Camera {camera!r} timed out after "
+                        f"{self.config.zmq_timeout_ms} ms "
+                        f"(count={count}); resetting ZMQ REQ socket."
+                    )
+                self._reset_camera_client(camera)
+                if attempt < retries:
+                    continue
+                return self._camera_timeout_fallback(camera)
+
+            image = np.asarray(rgb)
+            expected_shape = (self.config.image_height, self.config.image_width, 3)
+            if image.shape != expected_shape:
+                raise ValueError(
+                    f"Camera {camera!r} returned {image.shape}; expected "
+                    f"{expected_shape}"
+                )
+            self._last_camera_images[camera] = image
+            return image
+
+        return self._camera_timeout_fallback(camera)
+
+    def _camera_timeout_fallback(self, camera: str) -> np.ndarray:
+        mode = self.config.camera_timeout_fallback
+        if mode in {"last", "last_then_black"} and camera in self._last_camera_images:
+            return self._last_camera_images[camera]
+        if mode in {"black", "last_then_black"}:
+            return np.zeros(
+                (self.config.image_height, self.config.image_width, 3),
+                dtype=np.uint8,
+            )
+        raise TimeoutError(
+            f"Camera {camera!r} did not respond within {self.config.zmq_timeout_ms} ms"
+        )
 
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
         if self.robot is None or not self.is_connected:

@@ -38,7 +38,9 @@ cd "$REPO_DIR"
 : "${CAMERA_HOST:=$ROBOT_HOST}"
 : "${WRIST_CAMERA_PORT:=5000}"
 : "${BASE_CAMERA_PORT:=5001}"
-: "${ZMQ_TIMEOUT_MS:=1500}"
+: "${ZMQ_TIMEOUT_MS:=5000}"
+: "${CAMERA_READ_RETRIES:=1}"
+: "${CAMERA_TIMEOUT_FALLBACK:=last_then_black}"
 : "${MAX_JOINT_DELTA:=0.2}"
 : "${MAX_GRIPPER_DELTA:=1.0}"
 : "${ACTION_MODE:=absolute_joint_position}"
@@ -108,6 +110,9 @@ Inference:
   RTC_EXECUTION_HORIZON      Default: 4 (lower latency/load)
   RTC_MAX_GUIDANCE_WEIGHT    Default: 1.0 (lower compute load)
   RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
+  ZMQ_TIMEOUT_MS             Default: 5000; avoids false camera timeouts during slow Pi0.5 steps
+  CAMERA_READ_RETRIES        Default: 1; retry after resetting a timed-out camera socket
+  CAMERA_TIMEOUT_FALLBACK    Default: last_then_black; keep rollout alive on camera hiccups
 
 Safety:
   MAX_JOINT_DELTA       Default: 0.2
@@ -578,6 +583,9 @@ ROBOT_POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
 LIVE_CAMERA_NAMES=$LIVE_CAMERA_NAMES_RESOLVED
 INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS=$INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS
 INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK=$INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK
+ZMQ_TIMEOUT_MS=$ZMQ_TIMEOUT_MS
+CAMERA_READ_RETRIES=$CAMERA_READ_RETRIES
+CAMERA_TIMEOUT_FALLBACK=$CAMERA_TIMEOUT_FALLBACK
 MAX_JOINT_DELTA=$MAX_JOINT_DELTA
 MAX_GRIPPER_DELTA=$MAX_GRIPPER_DELTA
 ACTION_MODE=$ACTION_MODE
@@ -611,6 +619,8 @@ cmd=(
   --robot.wrist_camera_port="$WRIST_CAMERA_PORT"
   --robot.base_camera_port="$BASE_CAMERA_PORT"
   --robot.zmq_timeout_ms="$ZMQ_TIMEOUT_MS"
+  --robot.camera_read_retries="$CAMERA_READ_RETRIES"
+  --robot.camera_timeout_fallback="$CAMERA_TIMEOUT_FALLBACK"
   --robot.camera_names="$LIVE_CAMERA_NAMES_RESOLVED"
   --robot.policy_camera_names="$POLICY_CAMERA_NAMES_RESOLVED"
   --robot.max_joint_delta="$MAX_JOINT_DELTA"
