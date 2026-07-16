@@ -183,6 +183,127 @@ print(policy_dir)
 PY
 }
 
+
+prepare_compatible_policy_dir() {
+  python - "$1" <<'PY_COMPAT'
+import hashlib
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+policy_dir = Path(sys.argv[1]).expanduser().resolve()
+config_path = policy_dir / "config.json"
+
+if not config_path.is_file():
+    raise SystemExit(f"FEHLT: {config_path}")
+
+raw_config = config_path.read_bytes()
+config = json.loads(raw_config)
+
+# Ältere LeRobot-PI05Config-Versionen kennen dieses neue
+# Metadatenfeld nicht. Beim lokalen Laden wird es nicht benötigt.
+if "pretrained_revision" not in config:
+    print(policy_dir)
+    raise SystemExit(0)
+
+removed_value = config.pop("pretrained_revision")
+
+cache_root = Path(
+    os.environ.get(
+        "PI05_COMPAT_CACHE_DIR",
+        str(
+            Path.home()
+            / ".cache"
+            / "lerobot"
+            / "pi05_compat"
+        ),
+    )
+).expanduser()
+
+digest = hashlib.sha256(
+    str(policy_dir).encode("utf-8")
+    + b"\0"
+    + raw_config
+).hexdigest()[:16]
+
+compat_dir = cache_root / digest
+compat_config = compat_dir / "config.json"
+
+sanitized = json.dumps(
+    config,
+    indent=2,
+    ensure_ascii=False,
+) + "\n"
+
+rebuild = True
+
+if compat_config.is_file():
+    try:
+        rebuild = compat_config.read_text() != sanitized
+    except OSError:
+        rebuild = True
+
+if rebuild:
+    if compat_dir.exists() or compat_dir.is_symlink():
+        if compat_dir.is_dir() and not compat_dir.is_symlink():
+            shutil.rmtree(compat_dir)
+        else:
+            compat_dir.unlink()
+
+    compat_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # Alle Modell-Dateien werden nur verlinkt.
+    # Die großen Gewichte werden nicht kopiert.
+    for source in policy_dir.iterdir():
+        if source.name == "config.json":
+            continue
+
+        destination = compat_dir / source.name
+
+        destination.symlink_to(
+            source.resolve(),
+            target_is_directory=source.is_dir(),
+        )
+
+    compat_config.write_text(sanitized)
+
+print(
+    "Kompatibilitätsfix aktiv: entferne "
+    f"pretrained_revision={removed_value!r} "
+    "nur aus einer separaten Config.",
+    file=sys.stderr,
+)
+
+print(
+    f"Original bleibt unverändert: {config_path}",
+    file=sys.stderr,
+)
+
+print(
+    f"Verwendeter Policy-Pfad: {compat_dir}",
+    file=sys.stderr,
+)
+
+print(compat_dir)
+PY_COMPAT
+}
+
+# Wenn CKPT nicht explizit gesetzt wurde, wird zuerst das lokal
+# heruntergeladene Modell verwendet.
+if [[ -z "$CKPT" ]]; then
+  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR/checkpoints/$HF_CHECKPOINT/pretrained_model"
+
+  if [[ -f "$LOCAL_CKPT_CANDIDATE/config.json" ]]; then
+    CKPT="$LOCAL_CKPT_CANDIDATE"
+    echo "Verwende lokalen Checkpoint: $CKPT" >&2
+  fi
+fi
+
 if [[ -n "$CKPT" ]]; then
   ORIGINAL_CKPT="$CKPT"
 
@@ -220,6 +341,16 @@ if [[ ! -f "$POLICY_CONFIG_PATH" ]]; then
     "FEHLT: config.json wurde nicht gefunden: $POLICY_CONFIG_PATH" \
     >&2
   exit 1
+fi
+
+ORIGINAL_CKPT="$CKPT"
+
+CKPT="$(prepare_compatible_policy_dir "$CKPT")"
+
+POLICY_CONFIG_PATH="$CKPT/config.json"
+
+if [[ "$CKPT" != "$ORIGINAL_CKPT" ]]; then
+  MODEL_SOURCE="${MODEL_SOURCE}-pi05-config-compat"
 fi
 
 export CKPT
