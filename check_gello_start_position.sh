@@ -12,7 +12,13 @@ cd "$REPO_DIR"
 
 # go_left_right_...: -0.0905,-0.1567,-0.1225,-2.3384,-0.0876,2.1658,-0.7721
 #pick_rectangle: -0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1034,-0.7830
-TARGET_ARGS=(--target-rad "${START_JOINTS_RAD:-0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1034,-0.7830}")
+#pick rectangle: 0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1034,-0.7830
+
+#TARGET_ARGS=(--target-rad "${START_JOINTS_RAD:-0.0530,-0.0429,-0.1260,-2.0204,-0.0417,2.0583,-0.7217}")
+TARGET_ARGS=(
+  --target-rad
+  "0.0530,0.0429,-0.1260,-2.0204,-0.0417,2.0583,0.7217"
+)
 
 python scripts/check_gello_start_position.py \
   --robot-host "${ROBOT_HOST:-127.0.0.1}" \

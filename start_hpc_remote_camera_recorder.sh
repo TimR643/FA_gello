@@ -17,8 +17,8 @@ HPC_CAMERA_HOST="${HPC_CAMERA_HOST:-127.0.0.1}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
 
-LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/push_white_cube}"
-LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/push_white_cube}"
+LEROBOT_ROOT="${LEROBOT_ROOT:-$HOME/lerobot_data/push_white_cube_v4}"
+LEROBOT_REPO_ID="${LEROBOT_REPO_ID:-local/push_white_cube_v4}"
 LEROBOT_FPS="${LEROBOT_FPS:-10}"
 # go_left_right_even_...: "go right if a red block is detected, go left if a green bock is detected"
 # pick up the red rectangle and go above the necessary hight
