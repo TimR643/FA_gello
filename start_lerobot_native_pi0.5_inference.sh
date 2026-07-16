@@ -30,7 +30,7 @@ cd "$REPO_DIR"
 
 : "${TASK:=pick up the red rectangle and go above the necessary height}"
 : "${DURATION:=50}"
-: "${FPS:=10}"
+: "${FPS:=5}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${DEVICE:=cuda}"
 : "${ROBOT_HOST:=127.0.0.1}"
@@ -38,20 +38,38 @@ cd "$REPO_DIR"
 : "${CAMERA_HOST:=$ROBOT_HOST}"
 : "${WRIST_CAMERA_PORT:=5000}"
 : "${BASE_CAMERA_PORT:=5001}"
-: "${ZMQ_TIMEOUT_MS:=3000}"
+: "${ZMQ_TIMEOUT_MS:=1500}"
 : "${MAX_JOINT_DELTA:=0.2}"
 : "${MAX_GRIPPER_DELTA:=1.0}"
 : "${ACTION_MODE:=absolute_joint_position}"
 : "${INFERENCE_TYPE:=rtc}"
-: "${RTC_EXECUTION_HORIZON:=10}"
-: "${RTC_MAX_GUIDANCE_WEIGHT:=5.0}"
+: "${RTC_EXECUTION_HORIZON:=4}"
+: "${RTC_MAX_GUIDANCE_WEIGHT:=1.0}"
 : "${RTC_PREFIX_ATTENTION_SCHEDULE:=}"
-: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=1}"
-: "${JOINT_INFERENCE_LOG_ENABLED:=true}"
+: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
+: "${JOINT_INFERENCE_LOG_ENABLED:=false}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
 : "${RECORD_LEROBOT:=false}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
+
+# Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
+# All values are still overridable by exporting them before launching.
+: "${PI05_LIMIT_CPU_THREADS:=true}"
+: "${PI05_CPU_THREADS:=1}"
+: "${TOKENIZERS_PARALLELISM:=false}"
+: "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+
+if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$PI05_CPU_THREADS}"
+  export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$PI05_CPU_THREADS}"
+fi
+
+export TOKENIZERS_PARALLELISM
+export PYTORCH_CUDA_ALLOC_CONF
 
 usage() {
   cat <<EOF_USAGE
@@ -71,7 +89,7 @@ Examples:
 
 Rollout overrides:
   TASK                 Task prompt
-  FPS                  Default: 10
+  FPS                  Default: 5 (conservative for Pi0.5)
   DURATION             Default: 50
   DEVICE               Default: cuda
 
@@ -85,14 +103,16 @@ Camera mapping:
 
 Inference:
   INFERENCE_TYPE             rtc or sync. Default: rtc
-  RTC_EXECUTION_HORIZON      Default: 10
-  RTC_MAX_GUIDANCE_WEIGHT    Default: 5.0
+  RTC_EXECUTION_HORIZON      Default: 4 (lower latency/load)
+  RTC_MAX_GUIDANCE_WEIGHT    Default: 1.0 (lower compute load)
   RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
 
 Safety:
   MAX_JOINT_DELTA       Default: 0.2
   MAX_GRIPPER_DELTA     Default: 1.0
   ACTION_MODE           Default: absolute_joint_position
+  PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
+  PI05_CPU_THREADS      Default: 1
 EOF_USAGE
 }
 
@@ -296,7 +316,8 @@ PY_COMPAT
 # Wenn CKPT nicht explizit gesetzt wurde, wird zuerst das lokal
 # heruntergeladene Modell verwendet.
 if [[ -z "$CKPT" ]]; then
-  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR/checkpoints/$HF_CHECKPOINT/pretrained_model"
+  LOCAL_MODEL_DIR_RESOLVED="${LOCAL_MODEL_DIR:-$HOME/lerobot_outputs/train/${HF_MODEL_REPO##*/}}"
+  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR_RESOLVED/checkpoints/$HF_CHECKPOINT/pretrained_model"
 
   if [[ -f "$LOCAL_CKPT_CANDIDATE/config.json" ]]; then
     CKPT="$LOCAL_CKPT_CANDIDATE"
@@ -500,6 +521,18 @@ if [[ -z "$POLICY_CAMERA_NAMES_RESOLVED" ]]; then
   exit 1
 fi
 
+if [[ "$DEVICE" == cuda* ]]; then
+  python - <<'PY_CUDA_CHECK'
+try:
+    import torch
+except Exception as exc:
+    raise SystemExit(f"FEHLT: DEVICE=cuda, aber torch kann nicht importiert werden: {exc}")
+
+if not torch.cuda.is_available():
+    raise SystemExit("FEHLT: DEVICE=cuda, aber torch.cuda.is_available() ist false. Setze DEVICE=cpu oder repariere CUDA.")
+PY_CUDA_CHECK
+fi
+
 if [[ "$RECORD_LEROBOT" == "true" ]]; then
   ROLLOUT_STRATEGY="${STRATEGY_TYPE:-sentry}"
 else
@@ -544,6 +577,13 @@ MAX_GRIPPER_DELTA=$MAX_GRIPPER_DELTA
 ACTION_MODE=$ACTION_MODE
 JOINT_INFERENCE_LOG_ENABLED=$JOINT_INFERENCE_LOG_ENABLED
 JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
+LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
+PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
+PI05_CPU_THREADS=$PI05_CPU_THREADS
+OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
+MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
+OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
+PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF
 EOF_CONFIG
 
 cmd=(
