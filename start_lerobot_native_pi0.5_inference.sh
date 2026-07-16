@@ -59,6 +59,7 @@ cd "$REPO_DIR"
 : "${PI05_CPU_THREADS:=1}"
 : "${TOKENIZERS_PARALLELISM:=false}"
 : "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+: "${PI05_OFFLINE_LOAD:=true}"
 
 if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
   export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$PI05_CPU_THREADS}"
@@ -81,6 +82,7 @@ Model source:
   HF_REVISION         Hub branch/tag/commit. Default: main
   HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
   CKPT                Optional local pretrained_model path; bypasses Hub lookup
+  LOCAL_MODEL_DIR     Optional local training/output root searched before Hub
 
 Examples:
   $0
@@ -113,6 +115,8 @@ Safety:
   ACTION_MODE           Default: absolute_joint_position
   PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
   PI05_CPU_THREADS      Default: 1
+  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
+  PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
 EOF_USAGE
 }
 
@@ -230,15 +234,11 @@ if "pretrained_revision" not in config:
 
 removed_value = config.pop("pretrained_revision")
 
+default_cache_root = policy_dir.parent / ".pi05_compat"
 cache_root = Path(
     os.environ.get(
         "PI05_COMPAT_CACHE_DIR",
-        str(
-            Path.home()
-            / ".cache"
-            / "lerobot"
-            / "pi05_compat"
-        ),
+        str(default_cache_root),
     )
 ).expanduser()
 
@@ -369,6 +369,12 @@ ORIGINAL_CKPT="$CKPT"
 CKPT="$(prepare_compatible_policy_dir "$CKPT")"
 
 POLICY_CONFIG_PATH="$CKPT/config.json"
+
+if [[ "$PI05_OFFLINE_LOAD" == "true" ]]; then
+  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+fi
 
 if [[ "$CKPT" != "$ORIGINAL_CKPT" ]]; then
   MODEL_SOURCE="${MODEL_SOURCE}-pi05-config-compat"
@@ -584,6 +590,10 @@ OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
 MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
 OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
 PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF
+PI05_OFFLINE_LOAD=$PI05_OFFLINE_LOAD
+HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-<unset>}
+TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-<unset>}
+ORIGINAL_CKPT=$ORIGINAL_CKPT
 EOF_CONFIG
 
 cmd=(
