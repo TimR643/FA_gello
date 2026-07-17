@@ -122,9 +122,7 @@ class GelloZMQ(Robot):
                 )
                 self._configure_zmq_timeout(self.cameras[camera], name="base camera")
             else:
-                raise ValueError(
-                    f"Unsupported GELLO camera {camera!r}; use wrist/base"
-                )
+                raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
         self._open_joint_inference_log()
         self._is_connected = True
@@ -176,6 +174,9 @@ class GelloZMQ(Robot):
         header.extend(
             f"joint_{index}_velocity_rad_s" for index in range(self.config.num_dofs)
         )
+        header.extend(
+            f"joint_{index}_torque_nm" for index in range(self.config.num_dofs)
+        )
         self._joint_log_writer.writerow(header)
         self._joint_log_file.flush()
         print(f"[gello_zmq] Writing inference joint log to {self._joint_log_path}")
@@ -200,7 +201,7 @@ class GelloZMQ(Robot):
         return ((state - self._last_joint_log_state) / dt_s).astype(np.float32)
 
     def _write_joint_inference_log(
-        self, state: np.ndarray, velocities: np.ndarray
+        self, state: np.ndarray, velocities: np.ndarray, torques: np.ndarray
     ) -> None:
         now = datetime.now(timezone.utc)
         now_s = now.timestamp()
@@ -212,6 +213,7 @@ class GelloZMQ(Robot):
                     f"{now_s:.9f}",
                     *(f"{float(value):.9f}" for value in state),
                     *(f"{float(value):.9f}" for value in velocities),
+                    *(f"{float(value):.9f}" for value in torques),
                 ]
             )
             self._joint_log_file.flush()
@@ -243,8 +245,14 @@ class GelloZMQ(Robot):
             velocities = np.asarray(velocities, dtype=np.float32)
             if velocities.shape != (self.config.num_dofs,):
                 velocities = self._estimate_joint_velocities(state)
+        torques = np.asarray(
+            raw.get("joint_torques", np.full(self.config.num_dofs, np.nan)),
+            dtype=np.float32,
+        )
+        if torques.shape != (self.config.num_dofs,):
+            torques = np.full(self.config.num_dofs, np.nan, dtype=np.float32)
         self._last_state = state
-        self._write_joint_inference_log(state, velocities)
+        self._write_joint_inference_log(state, velocities, torques)
         obs: dict[str, Any] = {
             key: float(value) for key, value in zip(self._joint_feature_names(), state)
         }
