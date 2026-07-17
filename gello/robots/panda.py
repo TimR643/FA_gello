@@ -39,25 +39,22 @@ class PandaRobot(Robot):
         self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
         self.last_target_width = 0.08
 
-
         self.gripper_closed = False
 
         self.gripper
-        
+
         # Manueller Override Status
         self.manual_release = False
-        
+
         # Starte den Hintergrund-Thread für die Tastatur
         threading.Thread(target=self._listen_for_manual_open, daemon=True).start()
         print(">>> MANUELLER OVERRIDE AKTIV: Drücke ENTER im Terminal zum Öffnen! <<<")
 
-
     def _listen_for_manual_open(self):
         while True:
-            input() # Wartet auf Enter-Taste
+            input()  # Wartet auf Enter-Taste
             self.manual_release = True
             print("!!! MANUELLER BEFEHL: GREIFER ÖFFNEN !!!")
-
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -105,12 +102,26 @@ class PandaRobot(Robot):
         return
 
     def get_observations(self) -> Dict[str, np.ndarray]:
-        joints = self.get_joint_state()
+        # Read the arm state once so position, velocity, and measured torque
+        # belong to the same Polymetis control-cycle sample.
+        robot_state = self.robot.get_robot_state()
+        arm_positions = np.asarray(robot_state.joint_positions, dtype=np.float32)
+        arm_velocities = np.asarray(robot_state.joint_velocities, dtype=np.float32)
+        arm_torques = np.asarray(robot_state.motor_torques_measured, dtype=np.float32)
+        gripper_state = self.gripper.get_state()
+        gripper_position = float(gripper_state.width / MAX_OPEN)
+
+        joints = np.append(arm_positions, gripper_position)
+        # Polymetis does not expose gripper velocity or measured torque. Mark
+        # these values unavailable instead of writing a fake measurement.
+        joint_velocities = np.append(arm_velocities, np.nan)
+        joint_torques = np.append(arm_torques, np.nan)
         pos_quat = np.zeros(7)
         gripper_pos = np.array([joints[-1]])
         return {
             "joint_positions": joints,
-            "joint_velocities": joints,
+            "joint_velocities": joint_velocities,
+            "joint_torques": joint_torques,
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
         }
