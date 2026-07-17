@@ -43,43 +43,15 @@ cd "$REPO_DIR"
 : "${MAX_GRIPPER_DELTA:=1.0}"
 : "${ACTION_MODE:=absolute_joint_position}"
 : "${INFERENCE_TYPE:=rtc}"
-: "${RTC_EXECUTION_HORIZON:=12}"
+: "${RTC_EXECUTION_HORIZON:=10}"
 : "${RTC_MAX_GUIDANCE_WEIGHT:=5.0}"
 : "${RTC_PREFIX_ATTENTION_SCHEDULE:=}"
-: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
-: "${JOINT_INFERENCE_LOG_ENABLED:=false}"
+: "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=1}"
+: "${JOINT_INFERENCE_LOG_ENABLED:=true}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
 : "${RECORD_LEROBOT:=false}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
-
-# Stable remote-camera profile, aligned with the SmolVLA launcher that does
-# not lose the wrist-camera connection:
-# - 10 Hz keeps the camera ZMQ server polled regularly.
-# - 3000 ms tolerates short SSH/network/preprocessing stalls.
-# - RTC horizon/guidance match the proven SmolVLA timing profile and provide
-#   a longer overlap for Pi0.5 chunk transitions.
-# - Two CPU threads avoid serializing all image/token preprocessing while still
-#   preventing uncontrolled BLAS/OpenMP thread fan-out on the HPC.
-
-# Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
-# All values are still overridable by exporting them before launching.
-: "${PI05_LIMIT_CPU_THREADS:=true}"
-: "${PI05_CPU_THREADS:=2}"
-: "${TOKENIZERS_PARALLELISM:=false}"
-: "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
-: "${PI05_OFFLINE_LOAD:=true}"
-
-if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
-  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$PI05_CPU_THREADS}"
-  export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$PI05_CPU_THREADS}"
-  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-$PI05_CPU_THREADS}"
-  export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$PI05_CPU_THREADS}"
-  export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$PI05_CPU_THREADS}"
-fi
-
-export TOKENIZERS_PARALLELISM
-export PYTORCH_CUDA_ALLOC_CONF
 
 usage() {
   cat <<EOF_USAGE
@@ -91,7 +63,6 @@ Model source:
   HF_REVISION         Hub branch/tag/commit. Default: main
   HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
   CKPT                Optional local pretrained_model path; bypasses Hub lookup
-  LOCAL_MODEL_DIR     Optional local training/output root searched before Hub
 
 Examples:
   $0
@@ -100,7 +71,7 @@ Examples:
 
 Rollout overrides:
   TASK                 Task prompt
-  FPS                  Default: 10 (matches the stable remote-camera rollout)
+  FPS                  Default: 10
   DURATION             Default: 50
   DEVICE               Default: cuda
 
@@ -114,7 +85,7 @@ Camera mapping:
 
 Inference:
   INFERENCE_TYPE             rtc or sync. Default: rtc
-  RTC_EXECUTION_HORIZON      Default: 12 (more headroom for Pi0.5 latency)
+  RTC_EXECUTION_HORIZON      Default: 10
   RTC_MAX_GUIDANCE_WEIGHT    Default: 5.0
   RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
 
@@ -122,10 +93,6 @@ Safety:
   MAX_JOINT_DELTA       Default: 0.2
   MAX_GRIPPER_DELTA     Default: 1.0
   ACTION_MODE           Default: absolute_joint_position
-  PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
-  PI05_CPU_THREADS      Default: 2
-  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
-  PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
 EOF_USAGE
 }
 
@@ -216,124 +183,6 @@ print(policy_dir)
 PY
 }
 
-
-prepare_compatible_policy_dir() {
-  python - "$1" <<'PY_COMPAT'
-import hashlib
-import json
-import os
-import shutil
-import sys
-from pathlib import Path
-
-policy_dir = Path(sys.argv[1]).expanduser().resolve()
-config_path = policy_dir / "config.json"
-
-if not config_path.is_file():
-    raise SystemExit(f"FEHLT: {config_path}")
-
-raw_config = config_path.read_bytes()
-config = json.loads(raw_config)
-
-# Ältere LeRobot-PI05Config-Versionen kennen dieses neue
-# Metadatenfeld nicht. Beim lokalen Laden wird es nicht benötigt.
-if "pretrained_revision" not in config:
-    print(policy_dir)
-    raise SystemExit(0)
-
-removed_value = config.pop("pretrained_revision")
-
-default_cache_root = policy_dir.parent / ".pi05_compat"
-cache_root = Path(
-    os.environ.get(
-        "PI05_COMPAT_CACHE_DIR",
-        str(default_cache_root),
-    )
-).expanduser()
-
-digest = hashlib.sha256(
-    str(policy_dir).encode("utf-8")
-    + b"\0"
-    + raw_config
-).hexdigest()[:16]
-
-compat_dir = cache_root / digest
-compat_config = compat_dir / "config.json"
-
-sanitized = json.dumps(
-    config,
-    indent=2,
-    ensure_ascii=False,
-) + "\n"
-
-rebuild = True
-
-if compat_config.is_file():
-    try:
-        rebuild = compat_config.read_text() != sanitized
-    except OSError:
-        rebuild = True
-
-if rebuild:
-    if compat_dir.exists() or compat_dir.is_symlink():
-        if compat_dir.is_dir() and not compat_dir.is_symlink():
-            shutil.rmtree(compat_dir)
-        else:
-            compat_dir.unlink()
-
-    compat_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    # Alle Modell-Dateien werden nur verlinkt.
-    # Die großen Gewichte werden nicht kopiert.
-    for source in policy_dir.iterdir():
-        if source.name == "config.json":
-            continue
-
-        destination = compat_dir / source.name
-
-        destination.symlink_to(
-            source.resolve(),
-            target_is_directory=source.is_dir(),
-        )
-
-    compat_config.write_text(sanitized)
-
-print(
-    "Kompatibilitätsfix aktiv: entferne "
-    f"pretrained_revision={removed_value!r} "
-    "nur aus einer separaten Config.",
-    file=sys.stderr,
-)
-
-print(
-    f"Original bleibt unverändert: {config_path}",
-    file=sys.stderr,
-)
-
-print(
-    f"Verwendeter Policy-Pfad: {compat_dir}",
-    file=sys.stderr,
-)
-
-print(compat_dir)
-PY_COMPAT
-}
-
-# Wenn CKPT nicht explizit gesetzt wurde, wird zuerst das lokal
-# heruntergeladene Modell verwendet.
-if [[ -z "$CKPT" ]]; then
-  LOCAL_MODEL_DIR_RESOLVED="${LOCAL_MODEL_DIR:-$HOME/lerobot_outputs/train/${HF_MODEL_REPO##*/}}"
-  LOCAL_CKPT_CANDIDATE="$LOCAL_MODEL_DIR_RESOLVED/checkpoints/$HF_CHECKPOINT/pretrained_model"
-
-  if [[ -f "$LOCAL_CKPT_CANDIDATE/config.json" ]]; then
-    CKPT="$LOCAL_CKPT_CANDIDATE"
-    echo "Verwende lokalen Checkpoint: $CKPT" >&2
-  fi
-fi
-
 if [[ -n "$CKPT" ]]; then
   ORIGINAL_CKPT="$CKPT"
 
@@ -371,22 +220,6 @@ if [[ ! -f "$POLICY_CONFIG_PATH" ]]; then
     "FEHLT: config.json wurde nicht gefunden: $POLICY_CONFIG_PATH" \
     >&2
   exit 1
-fi
-
-ORIGINAL_CKPT="$CKPT"
-
-CKPT="$(prepare_compatible_policy_dir "$CKPT")"
-
-POLICY_CONFIG_PATH="$CKPT/config.json"
-
-if [[ "$PI05_OFFLINE_LOAD" == "true" ]]; then
-  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
-  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
-fi
-
-if [[ "$CKPT" != "$ORIGINAL_CKPT" ]]; then
-  MODEL_SOURCE="${MODEL_SOURCE}-pi05-config-compat"
 fi
 
 export CKPT
@@ -536,42 +369,6 @@ if [[ -z "$POLICY_CAMERA_NAMES_RESOLVED" ]]; then
   exit 1
 fi
 
-if (( ZMQ_TIMEOUT_MS < 3000 )); then
-  echo "WARNUNG: ZMQ_TIMEOUT_MS=$ZMQ_TIMEOUT_MS ist fuer Pi0.5 ueber SSH knapp; empfohlen sind mindestens 3000 ms." >&2
-fi
-
-python - "$FPS" "$RTC_EXECUTION_HORIZON" <<'PY_TIMING_CHECK'
-import sys
-fps = float(sys.argv[1])
-horizon = int(sys.argv[2])
-if fps <= 0:
-    raise SystemExit("FEHLT: FPS muss groesser als 0 sein.")
-if horizon <= 0:
-    raise SystemExit("FEHLT: RTC_EXECUTION_HORIZON muss groesser als 0 sein.")
-if fps < 10:
-    print(
-        f"WARNUNG: FPS={fps:g}. Fuer den stabilen Remote-Kamerabetrieb wurde FPS=10 getestet.",
-        file=sys.stderr,
-    )
-if horizon < 10:
-    print(
-        f"WARNUNG: RTC_EXECUTION_HORIZON={horizon}. Fuer Pi0.5 sind 10-12 robuster.",
-        file=sys.stderr,
-    )
-PY_TIMING_CHECK
-
-if [[ "$DEVICE" == cuda* ]]; then
-  python - <<'PY_CUDA_CHECK'
-try:
-    import torch
-except Exception as exc:
-    raise SystemExit(f"FEHLT: DEVICE=cuda, aber torch kann nicht importiert werden: {exc}")
-
-if not torch.cuda.is_available():
-    raise SystemExit("FEHLT: DEVICE=cuda, aber torch.cuda.is_available() ist false. Setze DEVICE=cpu oder repariere CUDA.")
-PY_CUDA_CHECK
-fi
-
 if [[ "$RECORD_LEROBOT" == "true" ]]; then
   ROLLOUT_STRATEGY="${STRATEGY_TYPE:-sentry}"
 else
@@ -616,17 +413,6 @@ MAX_GRIPPER_DELTA=$MAX_GRIPPER_DELTA
 ACTION_MODE=$ACTION_MODE
 JOINT_INFERENCE_LOG_ENABLED=$JOINT_INFERENCE_LOG_ENABLED
 JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
-LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
-PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
-PI05_CPU_THREADS=$PI05_CPU_THREADS
-OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
-MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
-OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
-PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF
-PI05_OFFLINE_LOAD=$PI05_OFFLINE_LOAD
-HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-<unset>}
-TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-<unset>}
-ORIGINAL_CKPT=$ORIGINAL_CKPT
 EOF_CONFIG
 
 cmd=(

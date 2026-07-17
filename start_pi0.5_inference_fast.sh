@@ -29,7 +29,7 @@ cd "$REPO_DIR"
 : "${CKPT:=}"
 
 : "${TASK:=pick up the red rectangle and go above the necessary height}"
-: "${DURATION:=50}"
+: "${DURATION:=100}"
 : "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${DEVICE:=cuda}"
@@ -59,15 +59,19 @@ cd "$REPO_DIR"
 # - 3000 ms tolerates short SSH/network/preprocessing stalls.
 # - RTC horizon/guidance match the proven SmolVLA timing profile and provide
 #   a longer overlap for Pi0.5 chunk transitions.
-# - Two CPU threads avoid serializing all image/token preprocessing while still
-#   preventing uncontrolled BLAS/OpenMP thread fan-out on the HPC.
+# - Eight CPU threads accelerate the expensive Pi0.5/PaliGemma construction.
+# - Passive OpenMP waiting keeps those threads from busy-spinning during rollout,
+#   preserving CPU time for the camera/ZMQ control loop.
 
 # Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
 # All values are still overridable by exporting them before launching.
 : "${PI05_LIMIT_CPU_THREADS:=true}"
-: "${PI05_CPU_THREADS:=2}"
+: "${PI05_CPU_THREADS:=8}"
 : "${TOKENIZERS_PARALLELISM:=false}"
 : "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+: "${CUDA_MODULE_LOADING:=LAZY}"
+: "${OMP_WAIT_POLICY:=PASSIVE}"
+: "${KMP_BLOCKTIME:=0}"
 : "${PI05_OFFLINE_LOAD:=true}"
 
 if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
@@ -80,6 +84,10 @@ fi
 
 export TOKENIZERS_PARALLELISM
 export PYTORCH_CUDA_ALLOC_CONF
+export CUDA_MODULE_LOADING
+export OMP_WAIT_POLICY
+export KMP_BLOCKTIME
+export PYTHONUNBUFFERED=1
 
 usage() {
   cat <<EOF_USAGE
@@ -123,8 +131,8 @@ Safety:
   MAX_GRIPPER_DELTA     Default: 1.0
   ACTION_MODE           Default: absolute_joint_position
   PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
-  PI05_CPU_THREADS      Default: 2
-  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
+  PI05_CPU_THREADS      Default: 8 (faster Pi0.5 construction)
+  PI05_OFFLINE_LOAD    Default: true; resolves the cached checkpoint locally first
   PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
 EOF_USAGE
 }
@@ -189,14 +197,20 @@ repo_id, revision, checkpoint = sys.argv[1:4]
 subdir = f"checkpoints/{checkpoint}/pretrained_model"
 
 try:
-    snapshot_root = Path(
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="model",
-            revision=revision or None,
-            allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
-        )
+    # Repeated HPC starts should not wait for Hub HEAD/metadata requests.
+    # Resolve the already cached snapshot locally first and use the network only
+    # when the requested checkpoint is genuinely absent.
+    download_kwargs = dict(
+        repo_id=repo_id,
+        repo_type="model",
+        revision=revision or None,
+        allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
     )
+    try:
+        snapshot_root = Path(snapshot_download(local_files_only=True, **download_kwargs))
+        print("Verwende vollständig lokalen Hugging-Face-Cache.", file=sys.stderr)
+    except Exception:
+        snapshot_root = Path(snapshot_download(local_files_only=False, **download_kwargs))
 except Exception as exc:
     raise SystemExit(
         f"Konnte {repo_id}@{revision}:{subdir} "
@@ -619,6 +633,9 @@ JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
 LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
 PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
 PI05_CPU_THREADS=$PI05_CPU_THREADS
+CUDA_MODULE_LOADING=$CUDA_MODULE_LOADING
+OMP_WAIT_POLICY=$OMP_WAIT_POLICY
+KMP_BLOCKTIME=$KMP_BLOCKTIME
 OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
 MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
 OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pi0.5-native LeRobot BYOH rollout for the GELLO/ZMQ Panda stack.
+# Pi0.5 episodic LeRobot rollout for the GELLO/ZMQ Panda stack.
+#
+# The Pi0.5 policy is loaded only once. Multiple autonomous episodes are
+# executed in the same process. Between episodes, LeRobot returns the robot
+# to the joint position captured when this process connected to the robot.
 #
 # Default model source:
 #   Hugging Face repo: TimR643/pick_rectangle_go_up_pi05
@@ -29,7 +33,7 @@ cd "$REPO_DIR"
 : "${CKPT:=}"
 
 : "${TASK:=pick up the red rectangle and go above the necessary height}"
-: "${DURATION:=50}"
+: "${DURATION:=0}"
 : "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${DEVICE:=cuda}"
@@ -49,7 +53,14 @@ cd "$REPO_DIR"
 : "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
 : "${JOINT_INFERENCE_LOG_ENABLED:=false}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
-: "${RECORD_LEROBOT:=false}"
+: "${NUM_EPISODES:=10}"
+: "${EPISODE_TIME_S:=100}"
+: "${RESET_TIME_S:=15}"
+: "${RESET_TO_INITIAL_POSITION:=true}"
+: "${EPISODIC_BASE_DIR:=$HOME/lerobot_inferences/pi05_episodic}"
+: "${EPISODIC_PUSH_TO_HUB:=false}"
+: "${EPISODIC_STREAMING_ENCODING:=true}"
+: "${EPISODIC_ENCODER_THREADS:=1}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
 
@@ -59,15 +70,19 @@ cd "$REPO_DIR"
 # - 3000 ms tolerates short SSH/network/preprocessing stalls.
 # - RTC horizon/guidance match the proven SmolVLA timing profile and provide
 #   a longer overlap for Pi0.5 chunk transitions.
-# - Two CPU threads avoid serializing all image/token preprocessing while still
-#   preventing uncontrolled BLAS/OpenMP thread fan-out on the HPC.
+# - Eight CPU threads accelerate the expensive Pi0.5/PaliGemma construction.
+# - Passive OpenMP waiting keeps those threads from busy-spinning during rollout,
+#   preserving CPU time for the camera/ZMQ control loop.
 
 # Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
 # All values are still overridable by exporting them before launching.
 : "${PI05_LIMIT_CPU_THREADS:=true}"
-: "${PI05_CPU_THREADS:=2}"
+: "${PI05_CPU_THREADS:=8}"
 : "${TOKENIZERS_PARALLELISM:=false}"
 : "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+: "${CUDA_MODULE_LOADING:=LAZY}"
+: "${OMP_WAIT_POLICY:=PASSIVE}"
+: "${KMP_BLOCKTIME:=0}"
 : "${PI05_OFFLINE_LOAD:=true}"
 
 if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
@@ -80,63 +95,64 @@ fi
 
 export TOKENIZERS_PARALLELISM
 export PYTORCH_CUDA_ALLOC_CONF
+export CUDA_MODULE_LOADING
+export OMP_WAIT_POLICY
+export KMP_BLOCKTIME
+export PYTHONUNBUFFERED=1
 
 usage() {
   cat <<EOF_USAGE
 Usage:
-  $0 [--record-lerobot] [--sync] [--rtc] [--help]
+  $0 [--sync] [--rtc] [--help]
+
+The policy is loaded once and reused for every episode.
+
+Episode overrides:
+  NUM_EPISODES              Default: 10
+  EPISODE_TIME_S             Default: 100 seconds
+  RESET_TIME_S               Default: 15 seconds
+  RESET_TO_INITIAL_POSITION  Default: true
+  EPISODIC_BASE_DIR          Default: \$HOME/lerobot_inferences/pi05_episodic
+
+During the session:
+  Right arrow  End the current episode or reset phase early
+  Left arrow   Discard and repeat the current episode
+  Escape       End the complete session
+
+Important:
+  Move the robot to the desired initial pose before starting this script.
+  LeRobot captures that pose when it connects and returns to it between episodes.
 
 Model source:
   HF_MODEL_REPO       Default: TimR643/pick_rectangle_go_up_pi05
-  HF_REVISION         Hub branch/tag/commit. Default: main
-  HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
-  CKPT                Optional local pretrained_model path; bypasses Hub lookup
-  LOCAL_MODEL_DIR     Optional local training/output root searched before Hub
-
-Examples:
-  $0
-  HF_CHECKPOINT=004000 $0
-  CKPT=/path/to/checkpoints/010000/pretrained_model $0
+  HF_REVISION         Default: main
+  HF_CHECKPOINT       Default: 010000
+  CKPT                Optional local pretrained_model path
+  LOCAL_MODEL_DIR     Optional local training/output root
 
 Rollout overrides:
   TASK                 Task prompt
-  FPS                  Default: 10 (matches the stable remote-camera rollout)
-  DURATION             Default: 50
+  FPS                  Default: 10
   DEVICE               Default: cuda
 
-Camera mapping:
-  LIVE_CAMERA_NAMES    Default inferred from live policy keys, usually wrist,base
-  POLICY_CAMERA_NAMES  Override policy camera keys exposed by robot plugin
-  INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS=false
-                       Do not emit empty_camera_* observations by default.
-  INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK=false
-                       Do not silently replace missing real cameras with black images.
+Camera/ZMQ:
+  ZMQ_TIMEOUT_MS       Default: 3000
+  LIVE_CAMERA_NAMES    Usually wrist,base
+  POLICY_CAMERA_NAMES  Policy-facing camera names
 
 Inference:
-  INFERENCE_TYPE             rtc or sync. Default: rtc
-  RTC_EXECUTION_HORIZON      Default: 12 (more headroom for Pi0.5 latency)
+  INFERENCE_TYPE             rtc or sync; default: rtc
+  RTC_EXECUTION_HORIZON      Default: 12
   RTC_MAX_GUIDANCE_WEIGHT    Default: 5.0
-  RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
 
-Safety:
-  MAX_JOINT_DELTA       Default: 0.2
-  MAX_GRIPPER_DELTA     Default: 1.0
-  ACTION_MODE           Default: absolute_joint_position
-  PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
-  PI05_CPU_THREADS      Default: 2
-  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
-  PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
+Performance:
+  PI05_CPU_THREADS      Default: 8
+  PI05_OFFLINE_LOAD     Default: true
 EOF_USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --record-lerobot|--record)
-      RECORD_LEROBOT=true
-      ;;
-    --no-record-lerobot|--no-record)
-      RECORD_LEROBOT=false
-      ;;
     --sync)
       INFERENCE_TYPE=sync
       ;;
@@ -189,14 +205,20 @@ repo_id, revision, checkpoint = sys.argv[1:4]
 subdir = f"checkpoints/{checkpoint}/pretrained_model"
 
 try:
-    snapshot_root = Path(
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="model",
-            revision=revision or None,
-            allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
-        )
+    # Repeated HPC starts should not wait for Hub HEAD/metadata requests.
+    # Resolve the already cached snapshot locally first and use the network only
+    # when the requested checkpoint is genuinely absent.
+    download_kwargs = dict(
+        repo_id=repo_id,
+        repo_type="model",
+        revision=revision or None,
+        allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
     )
+    try:
+        snapshot_root = Path(snapshot_download(local_files_only=True, **download_kwargs))
+        print("Verwende vollständig lokalen Hugging-Face-Cache.", file=sys.stderr)
+    except Exception:
+        snapshot_root = Path(snapshot_download(local_files_only=False, **download_kwargs))
 except Exception as exc:
     raise SystemExit(
         f"Konnte {repo_id}@{revision}:{subdir} "
@@ -572,19 +594,10 @@ if not torch.cuda.is_available():
 PY_CUDA_CHECK
 fi
 
-if [[ "$RECORD_LEROBOT" == "true" ]]; then
-  ROLLOUT_STRATEGY="${STRATEGY_TYPE:-sentry}"
-else
-  ROLLOUT_STRATEGY="${STRATEGY_TYPE:-base}"
-fi
+ROLLOUT_STRATEGY="${STRATEGY_TYPE:-episodic}"
 
-if [[ \
-  "$RECORD_LEROBOT" == "true" \
-  && "$INFERENCE_TYPE" == "rtc" \
-]]; then
-  echo \
-    "WARNUNG: Recording/Sentry kann Pi0.5 stark verlangsamen. Für Debugging zuerst ohne --record-lerobot testen." \
-    >&2
+if [[ "$ROLLOUT_STRATEGY" != "episodic" ]]; then
+  echo "WARNUNG: Dieses Skript ist fuer strategy.type=episodic ausgelegt; aktuell: $ROLLOUT_STRATEGY" >&2
 fi
 
 if [[ "$TASK" == *"bock"* || "$TASK" == *"hight"* ]]; then
@@ -605,6 +618,11 @@ DURATION=$DURATION
 FPS=$FPS
 DEVICE=$DEVICE
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
+NUM_EPISODES=$NUM_EPISODES
+EPISODE_TIME_S=$EPISODE_TIME_S
+RESET_TIME_S=$RESET_TIME_S
+RESET_TO_INITIAL_POSITION=$RESET_TO_INITIAL_POSITION
+EPISODIC_BASE_DIR=$EPISODIC_BASE_DIR
 INFERENCE_TYPE=$INFERENCE_TYPE
 INFERRED_POLICY_IMAGE_NAMES=${INFERRED_POLICY_IMAGE_NAMES:-<none>}
 ROBOT_POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
@@ -619,6 +637,9 @@ JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
 LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
 PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
 PI05_CPU_THREADS=$PI05_CPU_THREADS
+CUDA_MODULE_LOADING=$CUDA_MODULE_LOADING
+OMP_WAIT_POLICY=$OMP_WAIT_POLICY
+KMP_BLOCKTIME=$KMP_BLOCKTIME
 OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
 MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
 OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
@@ -676,59 +697,43 @@ else
   exit 2
 fi
 
-if [[ "$RECORD_LEROBOT" == "true" ]]; then
-  : "${INFERENCE_BASE_DIR:=$HOME/lerobot_inferences}"
+# The current LeRobot episodic strategy requires a dataset configuration.
+# Data is stored locally and is never uploaded unless explicitly overridden.
+RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+EPISODIC_ROOT="${EPISODIC_ROOT:-$EPISODIC_BASE_DIR/run_$RUN_STAMP}"
+EPISODIC_REPO_ID="${EPISODIC_REPO_ID:-local/rollout_pi05_episodic_$RUN_STAMP}"
 
-  RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$EPISODIC_ROOT"
 
-  if [[ "$MODEL_SOURCE" == "huggingface-cache" ]]; then
-    MODEL_NAME="${HF_MODEL_REPO##*/}"
-  else
-    MODEL_NAME="$(
-      python - "$CKPT" <<'PY'
-import sys
-from pathlib import Path
+cmd+=(
+  --strategy.reset_to_initial_position="$RESET_TO_INITIAL_POSITION"
+  --dataset.root="$EPISODIC_ROOT"
+  --dataset.repo_id="$EPISODIC_REPO_ID"
+  --dataset.single_task="$TASK"
+  --dataset.fps="$FPS"
+  --dataset.episode_time_s="$EPISODE_TIME_S"
+  --dataset.reset_time_s="$RESET_TIME_S"
+  --dataset.num_episodes="$NUM_EPISODES"
+  --dataset.push_to_hub="$EPISODIC_PUSH_TO_HUB"
+  --dataset.streaming_encoding="$EPISODIC_STREAMING_ENCODING"
+  --dataset.encoder_threads="$EPISODIC_ENCODER_THREADS"
+)
 
-p = Path(sys.argv[1]).resolve()
-parts = p.parts
+cat <<EOF_EPISODIC
 
-if "train" in parts:
-    i = parts.index("train")
+Episodic session:
+  Episodes:            $NUM_EPISODES
+  Episode duration:    $EPISODE_TIME_S s
+  Reset duration:      $RESET_TIME_S s
+  Return to start:     $RESET_TO_INITIAL_POSITION
+  Local dataset root:  $EPISODIC_ROOT
 
-    if i + 1 < len(parts):
-        print(parts[i + 1])
-        raise SystemExit
+Keyboard:
+  Right arrow = finish current episode/reset early
+  Left arrow  = discard and repeat episode
+  Escape      = stop session
 
-if "checkpoints" in parts:
-    i = parts.index("checkpoints")
-
-    if i - 1 >= 0:
-        print(parts[i - 1])
-        raise SystemExit
-
-print(p.name)
-PY
-    )"
-  fi
-
-  LEROBOT_RECORD_ROOT_RESOLVED="${LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
-
-  LEROBOT_RECORD_REPO_ID_RESOLVED="${LEROBOT_RECORD_REPO_ID:-local/rollout_${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
-
-  LEROBOT_RECORD_FPS_RESOLVED="${LEROBOT_RECORD_FPS:-$FPS}"
-
-  LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${LEROBOT_RECORD_PUSH_TO_HUB:-false}"
-
-  mkdir -p "$(dirname "$LEROBOT_RECORD_ROOT_RESOLVED")"
-
-  cmd+=(
-    --dataset.root="$LEROBOT_RECORD_ROOT_RESOLVED"
-    --dataset.repo_id="$LEROBOT_RECORD_REPO_ID_RESOLVED"
-    --dataset.single_task="$TASK"
-    --dataset.fps="$LEROBOT_RECORD_FPS_RESOLVED"
-    --dataset.push_to_hub="$LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED"
-  )
-fi
+EOF_EPISODIC
 
 printf 'Executing:'
 printf ' %q' "${cmd[@]}"

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pi0.5-native LeRobot BYOH rollout for the GELLO/ZMQ Panda stack.
+# Pi0.5 multi-episode rollout for the GELLO/ZMQ Panda stack.
+#
+# Compatible with LeRobot installations that only provide the built-in
+# base/sentry/highlight/dagger strategies. This launcher installs a small
+# local multi_episode strategy into the active LeRobot environment.
 #
 # Default model source:
 #   Hugging Face repo: TimR643/pick_rectangle_go_up_pi05
@@ -29,7 +33,7 @@ cd "$REPO_DIR"
 : "${CKPT:=}"
 
 : "${TASK:=pick up the red rectangle and go above the necessary height}"
-: "${DURATION:=50}"
+: "${DURATION:=0}"
 : "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
 : "${DEVICE:=cuda}"
@@ -49,7 +53,12 @@ cd "$REPO_DIR"
 : "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
 : "${JOINT_INFERENCE_LOG_ENABLED:=false}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
-: "${RECORD_LEROBOT:=false}"
+: "${NUM_EPISODES:=10}"
+: "${EPISODE_TIME_S:=30}"
+: "${RESET_TIME_S:=15}"
+: "${RESET_MOVE_DURATION_S:=2}"
+: "${RESET_TO_INITIAL_POSITION:=true}"
+: "${AUTO_INSTALL_MULTI_EPISODE:=true}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
 
@@ -59,15 +68,19 @@ cd "$REPO_DIR"
 # - 3000 ms tolerates short SSH/network/preprocessing stalls.
 # - RTC horizon/guidance match the proven SmolVLA timing profile and provide
 #   a longer overlap for Pi0.5 chunk transitions.
-# - Two CPU threads avoid serializing all image/token preprocessing while still
-#   preventing uncontrolled BLAS/OpenMP thread fan-out on the HPC.
+# - Eight CPU threads accelerate the expensive Pi0.5/PaliGemma construction.
+# - Passive OpenMP waiting keeps those threads from busy-spinning during rollout,
+#   preserving CPU time for the camera/ZMQ control loop.
 
 # Keep Pi0.5 from exhausting CPU RAM/threads on the robot/server host.
 # All values are still overridable by exporting them before launching.
 : "${PI05_LIMIT_CPU_THREADS:=true}"
-: "${PI05_CPU_THREADS:=2}"
+: "${PI05_CPU_THREADS:=8}"
 : "${TOKENIZERS_PARALLELISM:=false}"
 : "${PYTORCH_CUDA_ALLOC_CONF:=expandable_segments:True}"
+: "${CUDA_MODULE_LOADING:=LAZY}"
+: "${OMP_WAIT_POLICY:=PASSIVE}"
+: "${KMP_BLOCKTIME:=0}"
 : "${PI05_OFFLINE_LOAD:=true}"
 
 if [[ "$PI05_LIMIT_CPU_THREADS" == "true" ]]; then
@@ -80,63 +93,50 @@ fi
 
 export TOKENIZERS_PARALLELISM
 export PYTORCH_CUDA_ALLOC_CONF
+export CUDA_MODULE_LOADING
+export OMP_WAIT_POLICY
+export KMP_BLOCKTIME
+export PYTHONUNBUFFERED=1
 
 usage() {
   cat <<EOF_USAGE
 Usage:
-  $0 [--record-lerobot] [--sync] [--rtc] [--help]
+  $0 [--sync] [--rtc] [--help]
 
-Model source:
+This script loads Pi0.5 once and executes several autonomous passes.
+
+Episode settings:
+  NUM_EPISODES              Default: 10
+  EPISODE_TIME_S             Default: 100
+  RESET_TIME_S               Default: 15
+  RESET_MOVE_DURATION_S      Default: 2
+  RESET_TO_INITIAL_POSITION  Default: true
+
+Workflow:
+  1. Move the robot to the desired starting pose before launching.
+  2. Start this script. LeRobot captures that pose at connection time.
+  3. After each episode, policy and RTC state are cleared.
+  4. The robot returns to the captured starting pose.
+  5. During RESET_TIME_S, place the object back.
+
+The script adds a local strategy named multi_episode to the active LeRobot
+installation when it is missing. Original files are backed up once with a
+.pre_multi_episode suffix.
+
+Model:
   HF_MODEL_REPO       Default: TimR643/pick_rectangle_go_up_pi05
-  HF_REVISION         Hub branch/tag/commit. Default: main
-  HF_CHECKPOINT       Checkpoint folder under checkpoints/. Default:010000
-  CKPT                Optional local pretrained_model path; bypasses Hub lookup
-  LOCAL_MODEL_DIR     Optional local training/output root searched before Hub
+  HF_CHECKPOINT       Default: 010000
+  CKPT                Optional local pretrained_model path
 
-Examples:
-  $0
-  HF_CHECKPOINT=004000 $0
-  CKPT=/path/to/checkpoints/010000/pretrained_model $0
-
-Rollout overrides:
-  TASK                 Task prompt
-  FPS                  Default: 10 (matches the stable remote-camera rollout)
-  DURATION             Default: 50
-  DEVICE               Default: cuda
-
-Camera mapping:
-  LIVE_CAMERA_NAMES    Default inferred from live policy keys, usually wrist,base
-  POLICY_CAMERA_NAMES  Override policy camera keys exposed by robot plugin
-  INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS=false
-                       Do not emit empty_camera_* observations by default.
-  INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK=false
-                       Do not silently replace missing real cameras with black images.
-
-Inference:
-  INFERENCE_TYPE             rtc or sync. Default: rtc
-  RTC_EXECUTION_HORIZON      Default: 12 (more headroom for Pi0.5 latency)
-  RTC_MAX_GUIDANCE_WEIGHT    Default: 5.0
-  RTC_PREFIX_ATTENTION_SCHEDULE Optional; unset by default
-
-Safety:
-  MAX_JOINT_DELTA       Default: 0.2
-  MAX_GRIPPER_DELTA     Default: 1.0
-  ACTION_MODE           Default: absolute_joint_position
-  PI05_LIMIT_CPU_THREADS Default: true; caps BLAS/OpenMP thread fan-out
-  PI05_CPU_THREADS      Default: 2
-  PI05_OFFLINE_LOAD    Default: true; disables Hub/Transformers network checks after checkpoint resolution
-  PI05_COMPAT_CACHE_DIR Optional; defaults next to the local checkpoint for faster HPC filesystems
+Stable camera settings:
+  FPS                   Default: 10
+  ZMQ_TIMEOUT_MS        Default: 3000
+  RTC_EXECUTION_HORIZON Default: 12
 EOF_USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --record-lerobot|--record)
-      RECORD_LEROBOT=true
-      ;;
-    --no-record-lerobot|--no-record)
-      RECORD_LEROBOT=false
-      ;;
     --sync)
       INFERENCE_TYPE=sync
       ;;
@@ -155,6 +155,240 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+install_multi_episode_strategy() {
+  python - <<'PY_MULTI_EPISODE_INSTALL'
+from __future__ import annotations
+
+import inspect
+import py_compile
+import shutil
+from pathlib import Path
+
+import lerobot.rollout.configs as rollout_configs
+
+rollout_dir = Path(inspect.getfile(rollout_configs)).resolve().parent
+configs_path = rollout_dir / "configs.py"
+strategies_dir = rollout_dir / "strategies"
+factory_path = strategies_dir / "factory.py"
+init_path = strategies_dir / "__init__.py"
+strategy_path = strategies_dir / "multi_episode.py"
+
+required = [configs_path, factory_path, init_path, strategies_dir / "core.py"]
+missing = [str(p) for p in required if not p.exists()]
+if missing:
+    raise SystemExit("LeRobot rollout files fehlen: " + ", ".join(missing))
+
+strategy_source = r'''# Copyright 2025 The HuggingFace Inc. team.
+"Autonomous multi-episode rollout without dataset recording."
+
+from __future__ import annotations
+
+import logging
+import time
+
+from lerobot.utils.robot_utils import precise_sleep
+
+from ..context import RolloutContext
+from .core import RolloutStrategy, send_next_action
+
+logger = logging.getLogger(__name__)
+
+
+class MultiEpisodeStrategy(RolloutStrategy):
+    "Keep one policy loaded while executing and resetting multiple episodes."
+
+    def setup(self, ctx: RolloutContext) -> None:
+        self._init_engine(ctx)
+        logger.info("Multi-episode strategy ready")
+
+    def run(self, ctx: RolloutContext) -> None:
+        cfg = ctx.runtime.cfg
+        strategy_cfg = self.config
+        robot = ctx.hardware.robot_wrapper
+        engine = self._engine
+        interpolator = self._interpolator
+
+        control_interval = interpolator.get_control_interval(cfg.fps)
+        num_episodes = int(strategy_cfg.num_episodes)
+        episode_time_s = float(strategy_cfg.episode_time_s)
+        reset_time_s = float(strategy_cfg.reset_time_s)
+
+        for episode_index in range(num_episodes):
+            if ctx.runtime.shutdown_event.is_set():
+                break
+
+            logger.info(
+                "Starting episode %d/%d (%.1f s)",
+                episode_index + 1,
+                num_episodes,
+                episode_time_s,
+            )
+
+            engine.reset()
+            interpolator.reset()
+            engine.resume()
+            episode_start = time.perf_counter()
+
+            while (
+                time.perf_counter() - episode_start < episode_time_s
+                and not ctx.runtime.shutdown_event.is_set()
+            ):
+                loop_start = time.perf_counter()
+                obs = robot.get_observation()
+                obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+
+                if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
+                    continue
+
+                action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
+                self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+
+                dt = time.perf_counter() - loop_start
+                sleep_t = control_interval - dt
+                if sleep_t > 0:
+                    precise_sleep(sleep_t)
+                else:
+                    logger.warning(
+                        "Control loop slower than target: %.1f Hz instead of %.1f Hz",
+                        1.0 / max(dt, 1e-9),
+                        cfg.fps,
+                    )
+
+            engine.pause()
+            engine.reset()
+            interpolator.reset()
+            logger.info("Episode %d/%d finished", episode_index + 1, num_episodes)
+
+            if episode_index >= num_episodes - 1 or ctx.runtime.shutdown_event.is_set():
+                break
+
+            if strategy_cfg.reset_to_initial_position:
+                logger.info(
+                    "Returning robot to captured initial position over %.1f s",
+                    strategy_cfg.reset_move_duration_s,
+                )
+                self._return_to_initial_position(
+                    hw=ctx.hardware,
+                    duration_s=float(strategy_cfg.reset_move_duration_s),
+                )
+
+            logger.info("Reset phase %.1f s: place the object back now", reset_time_s)
+            reset_start = time.perf_counter()
+
+            # Poll robot and cameras throughout reset so remote ZMQ stays active.
+            while (
+                time.perf_counter() - reset_start < reset_time_s
+                and not ctx.runtime.shutdown_event.is_set()
+            ):
+                loop_start = time.perf_counter()
+                robot.get_observation()
+                dt = time.perf_counter() - loop_start
+                precise_sleep(max(control_interval - dt, 0.0))
+
+        logger.info("All requested episodes finished")
+
+    def teardown(self, ctx: RolloutContext) -> None:
+        self._teardown_hardware(
+            ctx.hardware,
+            return_to_initial_position=ctx.runtime.cfg.return_to_initial_position,
+        )
+        logger.info("Multi-episode strategy teardown complete")
+'''
+
+config_block = '''
+@RolloutStrategyConfig.register_subclass("multi_episode")
+@dataclass
+class MultiEpisodeStrategyConfig(RolloutStrategyConfig):
+    "Run multiple autonomous episodes while keeping the policy loaded."
+
+    num_episodes: int = 10
+    episode_time_s: float = 100.0
+    reset_time_s: float = 15.0
+    reset_move_duration_s: float = 2.0
+    reset_to_initial_position: bool = True
+
+
+'''
+
+def backup_once(path: Path) -> None:
+    backup = path.with_name(path.name + ".pre_multi_episode")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+
+def replace_file(path: Path, content: str) -> None:
+    backup_once(path)
+    path.write_text(content)
+
+strategies_dir.mkdir(parents=True, exist_ok=True)
+strategy_path.write_text(strategy_source)
+
+configs_text = configs_path.read_text()
+if 'register_subclass("multi_episode")' not in configs_text:
+    marker = '@RolloutStrategyConfig.register_subclass("dagger")'
+    if marker not in configs_text:
+        raise SystemExit(f"Konnte Einfuegepunkt in {configs_path} nicht finden.")
+    configs_text = configs_text.replace(marker, config_block + marker, 1)
+    replace_file(configs_path, configs_text)
+
+factory_text = factory_path.read_text()
+if "from .multi_episode import MultiEpisodeStrategy" not in factory_text:
+    import_marker = "from .highlight import HighlightStrategy"
+    if import_marker not in factory_text:
+        import_marker = "from .sentry import SentryStrategy"
+    if import_marker not in factory_text:
+        raise SystemExit(f"Konnte Import-Einfuegepunkt in {factory_path} nicht finden.")
+    factory_text = factory_text.replace(
+        import_marker,
+        "from .multi_episode import MultiEpisodeStrategy\n" + import_marker,
+        1,
+    )
+
+if 'config.type == "multi_episode"' not in factory_text:
+    dispatch_marker = "    raise ValueError("
+    if dispatch_marker not in factory_text:
+        raise SystemExit(f"Konnte Factory-Einfuegepunkt in {factory_path} nicht finden.")
+    factory_text = factory_text.replace(
+        dispatch_marker,
+        '    if config.type == "multi_episode":\n'
+        '        return MultiEpisodeStrategy(config)\n'
+        + dispatch_marker,
+        1,
+    )
+replace_file(factory_path, factory_text)
+
+init_text = init_path.read_text()
+if "from .multi_episode import MultiEpisodeStrategy" not in init_text:
+    import_marker = "from .highlight import HighlightStrategy"
+    if import_marker not in init_text:
+        import_marker = "from .sentry import SentryStrategy"
+    if import_marker in init_text:
+        init_text = init_text.replace(
+            import_marker,
+            "from .multi_episode import MultiEpisodeStrategy\n" + import_marker,
+            1,
+        )
+
+if '"MultiEpisodeStrategy",' not in init_text and "__all__" in init_text:
+    list_marker = '    "HighlightStrategy",'
+    if list_marker in init_text:
+        init_text = init_text.replace(
+            list_marker,
+            list_marker + '\n    "MultiEpisodeStrategy",',
+            1,
+        )
+replace_file(init_path, init_text)
+
+for path in (configs_path, factory_path, init_path, strategy_path):
+    py_compile.compile(str(path), doraise=True)
+
+print(f"Multi-episode strategy installed in: {rollout_dir}")
+PY_MULTI_EPISODE_INSTALL
+}
+
+if [[ "$AUTO_INSTALL_MULTI_EPISODE" == "true" ]]; then
+  install_multi_episode_strategy
+fi
 
 resolve_local_policy_path() {
   local candidate="$1"
@@ -189,14 +423,20 @@ repo_id, revision, checkpoint = sys.argv[1:4]
 subdir = f"checkpoints/{checkpoint}/pretrained_model"
 
 try:
-    snapshot_root = Path(
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="model",
-            revision=revision or None,
-            allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
-        )
+    # Repeated HPC starts should not wait for Hub HEAD/metadata requests.
+    # Resolve the already cached snapshot locally first and use the network only
+    # when the requested checkpoint is genuinely absent.
+    download_kwargs = dict(
+        repo_id=repo_id,
+        repo_type="model",
+        revision=revision or None,
+        allow_patterns=[f"{subdir}/*", f"{subdir}/**"],
     )
+    try:
+        snapshot_root = Path(snapshot_download(local_files_only=True, **download_kwargs))
+        print("Verwende vollständig lokalen Hugging-Face-Cache.", file=sys.stderr)
+    except Exception:
+        snapshot_root = Path(snapshot_download(local_files_only=False, **download_kwargs))
 except Exception as exc:
     raise SystemExit(
         f"Konnte {repo_id}@{revision}:{subdir} "
@@ -572,19 +812,11 @@ if not torch.cuda.is_available():
 PY_CUDA_CHECK
 fi
 
-if [[ "$RECORD_LEROBOT" == "true" ]]; then
-  ROLLOUT_STRATEGY="${STRATEGY_TYPE:-sentry}"
-else
-  ROLLOUT_STRATEGY="${STRATEGY_TYPE:-base}"
-fi
+ROLLOUT_STRATEGY="${STRATEGY_TYPE:-multi_episode}"
 
-if [[ \
-  "$RECORD_LEROBOT" == "true" \
-  && "$INFERENCE_TYPE" == "rtc" \
-]]; then
-  echo \
-    "WARNUNG: Recording/Sentry kann Pi0.5 stark verlangsamen. Für Debugging zuerst ohne --record-lerobot testen." \
-    >&2
+if [[ "$ROLLOUT_STRATEGY" != "multi_episode" ]]; then
+  echo "FEHLT: Dieses Skript erwartet STRATEGY_TYPE=multi_episode." >&2
+  exit 2
 fi
 
 if [[ "$TASK" == *"bock"* || "$TASK" == *"hight"* ]]; then
@@ -605,6 +837,11 @@ DURATION=$DURATION
 FPS=$FPS
 DEVICE=$DEVICE
 ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
+NUM_EPISODES=$NUM_EPISODES
+EPISODE_TIME_S=$EPISODE_TIME_S
+RESET_TIME_S=$RESET_TIME_S
+RESET_MOVE_DURATION_S=$RESET_MOVE_DURATION_S
+RESET_TO_INITIAL_POSITION=$RESET_TO_INITIAL_POSITION
 INFERENCE_TYPE=$INFERENCE_TYPE
 INFERRED_POLICY_IMAGE_NAMES=${INFERRED_POLICY_IMAGE_NAMES:-<none>}
 ROBOT_POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
@@ -619,6 +856,9 @@ JOINT_INFERENCE_LOG_DIR=$JOINT_INFERENCE_LOG_DIR
 LOG_ACTION_DIAGNOSTICS_EVERY_N=$LOG_ACTION_DIAGNOSTICS_EVERY_N
 PI05_LIMIT_CPU_THREADS=$PI05_LIMIT_CPU_THREADS
 PI05_CPU_THREADS=$PI05_CPU_THREADS
+CUDA_MODULE_LOADING=$CUDA_MODULE_LOADING
+OMP_WAIT_POLICY=$OMP_WAIT_POLICY
+KMP_BLOCKTIME=$KMP_BLOCKTIME
 OMP_NUM_THREADS=${OMP_NUM_THREADS:-<unset>}
 MKL_NUM_THREADS=${MKL_NUM_THREADS:-<unset>}
 OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-<unset>}
@@ -653,6 +893,11 @@ cmd=(
   --robot.joint_inference_log_enabled="$JOINT_INFERENCE_LOG_ENABLED"
   --robot.joint_inference_log_dir="$JOINT_INFERENCE_LOG_DIR"
   --task="$TASK"
+  --strategy.num_episodes="$NUM_EPISODES"
+  --strategy.episode_time_s="$EPISODE_TIME_S"
+  --strategy.reset_time_s="$RESET_TIME_S"
+  --strategy.reset_move_duration_s="$RESET_MOVE_DURATION_S"
+  --strategy.reset_to_initial_position="$RESET_TO_INITIAL_POSITION"
 )
 
 if [[ "$INFERENCE_TYPE" == "rtc" ]]; then
@@ -676,61 +921,21 @@ else
   exit 2
 fi
 
-if [[ "$RECORD_LEROBOT" == "true" ]]; then
-  : "${INFERENCE_BASE_DIR:=$HOME/lerobot_inferences}"
+cat <<EOF_MULTI
 
-  RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+Multi-episode session:
+  Episodes:          $NUM_EPISODES
+  Episode duration:  $EPISODE_TIME_S s
+  Reset duration:    $RESET_TIME_S s
+  Reset movement:    $RESET_MOVE_DURATION_S s
+  Return to start:   $RESET_TO_INITIAL_POSITION
 
-  if [[ "$MODEL_SOURCE" == "huggingface-cache" ]]; then
-    MODEL_NAME="${HF_MODEL_REPO##*/}"
-  else
-    MODEL_NAME="$(
-      python - "$CKPT" <<'PY'
-import sys
-from pathlib import Path
+The model remains loaded for the complete session.
+Press Ctrl+C to stop safely.
 
-p = Path(sys.argv[1]).resolve()
-parts = p.parts
+EOF_MULTI
 
-if "train" in parts:
-    i = parts.index("train")
-
-    if i + 1 < len(parts):
-        print(parts[i + 1])
-        raise SystemExit
-
-if "checkpoints" in parts:
-    i = parts.index("checkpoints")
-
-    if i - 1 >= 0:
-        print(parts[i - 1])
-        raise SystemExit
-
-print(p.name)
-PY
-    )"
-  fi
-
-  LEROBOT_RECORD_ROOT_RESOLVED="${LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
-
-  LEROBOT_RECORD_REPO_ID_RESOLVED="${LEROBOT_RECORD_REPO_ID:-local/rollout_${MODEL_NAME}_pi05_inference_${RUN_STAMP}}"
-
-  LEROBOT_RECORD_FPS_RESOLVED="${LEROBOT_RECORD_FPS:-$FPS}"
-
-  LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${LEROBOT_RECORD_PUSH_TO_HUB:-false}"
-
-  mkdir -p "$(dirname "$LEROBOT_RECORD_ROOT_RESOLVED")"
-
-  cmd+=(
-    --dataset.root="$LEROBOT_RECORD_ROOT_RESOLVED"
-    --dataset.repo_id="$LEROBOT_RECORD_REPO_ID_RESOLVED"
-    --dataset.single_task="$TASK"
-    --dataset.fps="$LEROBOT_RECORD_FPS_RESOLVED"
-    --dataset.push_to_hub="$LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED"
-  )
-fi
-
-printf 'Executing:'
+printf 'Executing:' 
 printf ' %q' "${cmd[@]}"
 printf '\n'
 
