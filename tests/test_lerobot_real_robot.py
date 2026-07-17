@@ -144,3 +144,19 @@ def test_gello_zmq_send_action_uses_live_state_after_external_reset():
 
     np.testing.assert_allclose(client.commands[-1], policy_target)
     np.testing.assert_allclose(robot._last_state, reset_pose)
+
+
+def test_start_position_target_can_keep_arm_and_open_gripper():
+    from scripts.move_gello_start_position import _build_parser, _target_from_args
+
+    current_arm = np.array(
+        [0.4, -0.3, 0.2, -2.1, 0.1, 1.8, -0.5], dtype=np.float32
+    )
+    args = _build_parser().parse_args(
+        ["--keep-arm", "--target-gripper", "1.0"]
+    )
+
+    target = _target_from_args(args, current_arm)
+
+    np.testing.assert_allclose(target[:7], current_arm)
+    assert target[7] == pytest.approx(1.0)

@@ -58,6 +58,10 @@ cd "$REPO_DIR"
 : "${EPISODE_TIME_S:=100}"
 : "${RESET_TIME_S:=15}"
 : "${RESET_TO_INITIAL_POSITION:=true}"
+: "${OPEN_GRIPPER_BEFORE_CONNECT:=true}"
+: "${START_GRIPPER:=1.0}"
+: "${GRIPPER_OPEN_STEPS:=25}"
+: "${GRIPPER_OPEN_PERIOD_S:=0.04}"
 : "${EPISODIC_BASE_DIR:=$HOME/lerobot_inferences/pi05_episodic}"
 : "${EPISODIC_PUSH_TO_HUB:=false}"
 : "${EPISODIC_STREAMING_ENCODING:=true}"
@@ -113,6 +117,8 @@ Episode overrides:
   EPISODE_TIME_S             Default: 100 seconds
   RESET_TIME_S               Default: 15 seconds
   RESET_TO_INITIAL_POSITION  Default: true
+  OPEN_GRIPPER_BEFORE_CONNECT Default: true
+  START_GRIPPER              Open gripper value; default: 1.0
   EPISODIC_BASE_DIR          Default: \$HOME/lerobot_inferences/pi05_episodic
 
 During the session:
@@ -122,6 +128,7 @@ During the session:
 
 Important:
   Move the robot to the desired initial pose before starting this script.
+  The launcher opens the gripper before LeRobot captures that initial pose.
   LeRobot captures that pose when it connects and returns to it between episodes.
   Alternatively, run move_gello_start_position.sh during the reset phase. The
   first command of the next episode is limited relative to that new live pose.
@@ -745,5 +752,17 @@ EOF_EPISODIC
 printf 'Executing:'
 printf ' %q' "${cmd[@]}"
 printf '\n'
+
+if [[ "$OPEN_GRIPPER_BEFORE_CONNECT" == "true" ]]; then
+  echo "Opening gripper before LeRobot captures the episode start pose ..."
+  python scripts/move_gello_start_position.py \
+    --robot-host "$ROBOT_HOST" \
+    --robot-port "$ROBOT_PORT" \
+    --timeout-ms "$ZMQ_TIMEOUT_MS" \
+    --keep-arm \
+    --target-gripper "$START_GRIPPER" \
+    --steps "$GRIPPER_OPEN_STEPS" \
+    --period-s "$GRIPPER_OPEN_PERIOD_S"
+fi
 
 "${cmd[@]}"
