@@ -284,9 +284,21 @@ class GelloZMQ(Robot):
     def send_action(self, action: dict[str, Any] | Any) -> dict[str, Any]:
         if self.robot is None or not self.is_connected:
             raise ConnectionError(f"{self} is not connected")
-        current = self._last_state
-        if current is None:
-            current = np.asarray(self.robot.get_joint_state(), dtype=np.float32)
+        # Do not use the last observation as the safety reference here. During
+        # an episodic reset another ZMQ client (for example
+        # move_gello_start_position.sh) can reposition the arm while the
+        # rollout is paused. In that case ``_last_state`` still describes the
+        # end of the previous episode and the first command would be clipped
+        # relative to that stale pose, pulling the robot back towards it.
+        # Reading the live state immediately before every command makes an
+        # externally established reset pose the reference for the next action.
+        current = np.asarray(self.robot.get_joint_state(), dtype=np.float32)
+        if current.shape != (self.config.num_dofs,):
+            raise ValueError(
+                f"Expected current state shape {(self.config.num_dofs,)}, got "
+                f"{current.shape}"
+            )
+        self._last_state = current.copy()
         raw_action = self._extract_action_array(action)
         safe = self.executor.make_safe_target(raw_action, current)
         target = safe.target.astype(np.float32)
