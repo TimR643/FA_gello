@@ -519,7 +519,7 @@ q_cols = [
     and contains_any(c, [
         "joint_position", "joint_pos", "position_rad",
         "actual_joint", "current_joint", "q_",
-        "q.", "q[", "q"
+        "q.", "q["
     ])
 ]
 
@@ -654,6 +654,12 @@ with h5py.File(h5_path, "w") as f:
         dset.attrs["note"] = (
             "Estimated from state/q. Prefer real state/dq only if valid velocity "
             "columns are available and not identical to q."
+        )
+
+    if "dq" not in state and "dq_estimated" not in state and "tau" not in state:
+        raise RuntimeError(
+            "H5 logger could not store joint velocity or torque. "
+            "Check the robot ZMQ server's get_observations response."
         )
 
 print(f"H5 geschrieben: {h5_path}")

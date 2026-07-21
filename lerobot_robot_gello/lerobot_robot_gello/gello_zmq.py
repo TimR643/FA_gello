@@ -200,6 +200,20 @@ class GelloZMQ(Robot):
             return np.zeros_like(state, dtype=np.float32)
         return ((state - self._last_joint_log_state) / dt_s).astype(np.float32)
 
+    def _resolve_joint_velocities(
+        self, state: np.ndarray, measured: Any | None
+    ) -> np.ndarray:
+        """Keep valid measurements and estimate missing velocity components."""
+        estimated = self._estimate_joint_velocities(state)
+        if measured is None:
+            return estimated
+        velocities = np.asarray(measured, dtype=np.float32).reshape(-1)
+        if velocities.shape != (self.config.num_dofs,):
+            return estimated
+        return np.where(np.isfinite(velocities), velocities, estimated).astype(
+            np.float32
+        )
+
     def _write_joint_inference_log(
         self, state: np.ndarray, velocities: np.ndarray, torques: np.ndarray
     ) -> None:
@@ -231,20 +245,17 @@ class GelloZMQ(Robot):
         if self.robot is None or not self.is_connected:
             raise ConnectionError(f"{self} is not connected")
         raw = self.robot.get_observations()
-        state = np.asarray(
-            raw.get("joint_positions", self.robot.get_joint_state()), dtype=np.float32
-        )
+        raw_positions = raw.get("joint_positions")
+        if raw_positions is None:
+            raw_positions = self.robot.get_joint_state()
+        state = np.asarray(raw_positions, dtype=np.float32)
         if state.shape != (self.config.num_dofs,):
             raise ValueError(
                 f"Expected state shape {(self.config.num_dofs,)}, got {state.shape}"
             )
-        velocities = raw.get("joint_velocities")
-        if velocities is None:
-            velocities = self._estimate_joint_velocities(state)
-        else:
-            velocities = np.asarray(velocities, dtype=np.float32)
-            if velocities.shape != (self.config.num_dofs,):
-                velocities = self._estimate_joint_velocities(state)
+        velocities = self._resolve_joint_velocities(
+            state, raw.get("joint_velocities")
+        )
         torques = np.asarray(
             raw.get("joint_torques", np.full(self.config.num_dofs, np.nan)),
             dtype=np.float32,
