@@ -3,8 +3,8 @@ set -e
 
 # Laptop-side startup for stable two-camera recording:
 # - robot control loop does NOT read/serialize camera frames
-# - wrist/base cameras are exposed as ZMQ camera servers for the HPC recorder
-# - recording stream sends only small robot state/action messages to the HPC
+# - recording stream sends only small robot state/action messages to the recorder
+# - cameras should be connected to/captured on the recorder machine by default
 
 SESSION="${SESSION:-gello_panda_remote_recording}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME/gello_software}"
@@ -13,6 +13,7 @@ CONDA_ENV="${CONDA_ENV:-polymetis}"
 
 HOST="${HOST:-127.0.0.1}"
 CAMERA_BIND_HOST="${CAMERA_BIND_HOST:-0.0.0.0}"
+START_LAPTOP_CAMERA_SERVERS="${START_LAPTOP_CAMERA_SERVERS:-0}"
 ROBOT_PORT="${ROBOT_PORT:-6001}"
 WRIST_PORT="${WRIST_PORT:-5000}"
 BASE_PORT="${BASE_PORT:-5001}"
@@ -35,14 +36,17 @@ cat <<EOF
 Starting laptop-side GELLO session: $SESSION
   Project dir:          $PROJECT_DIR
   Robot/control host:   $HOST:$ROBOT_PORT
+  Laptop camera servers:$START_LAPTOP_CAMERA_SERVERS (leave 0 for Polymetis realtime safety)
   Camera bind host:     $CAMERA_BIND_HOST
   Wrist camera:         id=$WRIST_CAMERA_ID port=$WRIST_PORT
   Base camera:          id=$BASE_CAMERA_ID port=$BASE_PORT
   HPC recorder target:  $HPC_RECORD_HOST:$RECORD_STREAM_PORT
   Control Hz:           $CONTROL_HZ
 
-Make sure the HPC recorder is running, e.g.:
-  HPC_CAMERA_HOST=<LAPTOP_IP> ./start_hpc_remote_camera_recorder.sh
+Make sure the recorder is running with cameras connected to that recorder, e.g.:
+  BASE_CAMERA_ID=<BASE_SERIAL> ./start_hpc_remote_camera_recorder.sh
+
+Only set START_LAPTOP_CAMERA_SERVERS=1 for debugging without Franka realtime control.
 EOF
 
 # Kill an old session with the same name, if present.
@@ -74,21 +78,22 @@ tmux send-keys -t "$SESSION:2" "cd '$PROJECT_DIR'" C-m
 tmux send-keys -t "$SESSION:2" "python experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot-port '$ROBOT_PORT' --robot-ip 127.0.0.1" C-m
 sleep 3
 
-# Window 3: Wrist camera ZMQ server, reachable by the HPC recorder
-tmux new-window -t "$SESSION:3" -n "camera_wrist"
-tmux send-keys -t "$SESSION:3" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:3" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:3" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:3" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$WRIST_PORT' --camera-id '$WRIST_CAMERA_ID'" C-m
-sleep 5
+if [ "$START_LAPTOP_CAMERA_SERVERS" = "1" ]; then
+  # Debug only: camera servers on the Franka laptop can disturb Polymetis realtime.
+  tmux new-window -t "$SESSION:3" -n "camera_wrist"
+  tmux send-keys -t "$SESSION:3" "source '$CONDA_SETUP'" C-m
+  tmux send-keys -t "$SESSION:3" "conda activate '$CONDA_ENV'" C-m
+  tmux send-keys -t "$SESSION:3" "cd '$PROJECT_DIR'" C-m
+  tmux send-keys -t "$SESSION:3" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$WRIST_PORT' --camera-id '$WRIST_CAMERA_ID'" C-m
+  sleep 5
 
-# Window 4: Base camera ZMQ server, reachable by the HPC recorder
-tmux new-window -t "$SESSION:4" -n "camera_base"
-tmux send-keys -t "$SESSION:4" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:4" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:4" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:4" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$BASE_PORT' --camera-id '$BASE_CAMERA_ID'" C-m
-sleep 3
+  tmux new-window -t "$SESSION:4" -n "camera_base"
+  tmux send-keys -t "$SESSION:4" "source '$CONDA_SETUP'" C-m
+  tmux send-keys -t "$SESSION:4" "conda activate '$CONDA_ENV'" C-m
+  tmux send-keys -t "$SESSION:4" "cd '$PROJECT_DIR'" C-m
+  tmux send-keys -t "$SESSION:4" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$BASE_PORT' --camera-id '$BASE_CAMERA_ID'" C-m
+  sleep 3
+fi
 
 # Window 5: Robot control loop, no camera clients, state/action-only recording stream
 tmux new-window -t "$SESSION:5" -n "env"

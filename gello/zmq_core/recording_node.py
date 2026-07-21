@@ -62,7 +62,17 @@ class ZMQRecordingReceiver:
         if recv_timeout_ms is not None:
             self._socket.setsockopt(zmq.RCVTIMEO, recv_timeout_ms)
         self._addr = f"tcp://{host}:{port}"
-        self._socket.bind(self._addr)
+        try:
+            self._socket.bind(self._addr)
+        except zmq.ZMQError as exc:
+            if exc.errno == zmq.EADDRINUSE:
+                raise RuntimeError(
+                    f"Recording stream port is already in use: {self._addr}. "
+                    "Another recorder is probably still running. Stop the old "
+                    "process or choose a different RECORD_STREAM_PORT/--port on "
+                    "both the recorder and Franka laptop."
+                ) from exc
+            raise
         print(f"Recording stream receiver binding to {self._addr}")
 
     def recv(self) -> Optional[Dict[str, Any]]:
