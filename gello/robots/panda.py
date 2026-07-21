@@ -1,13 +1,12 @@
 import time
+import threading
 from typing import Dict
 
 import numpy as np
 
-from gello.robots.robot import Robot
-
-import threading
-
 import torch
+
+from gello.robots.robot import Robot
 
 MAX_OPEN = 0.09
 
@@ -21,25 +20,14 @@ class PandaRobot(Robot):
         self.robot = RobotInterface(
             ip_address=robot_ip,
         )
-        self.gripper = GripperInterface(
-            ip_address="localhost",
-        )
+        self.gripper = GripperInterface(ip_address=robot_ip)
         self.robot.go_home()
         self.robot.start_joint_impedance()
         self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
         time.sleep(1)
-
-        self.robot = polymetis.RobotInterface(ip_address=robot_ip)
-        self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
-
-        self.last_target_width = 0.08
-
-        self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
         self.last_target_width = 0.08
 
         self.gripper_closed = False
-
-        self.gripper
 
         # Manueller Override Status
         self.manual_release = False
