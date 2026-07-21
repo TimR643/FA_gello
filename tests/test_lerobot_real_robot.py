@@ -105,3 +105,58 @@ def test_gello_zmq_action_diagnostics_reports_delta_clipping(capsys):
     output = capsys.readouterr().out
     assert "delta-clipped" in output
     assert "joint_0.pos" in output
+
+
+def test_gello_zmq_send_action_uses_live_state_after_external_reset():
+    from lerobot_robot_gello.config_gello_zmq import GelloZMQConfig
+    from lerobot_robot_gello.gello_zmq import GelloZMQ
+
+    class FakeRobotClient:
+        def __init__(self, live_state):
+            self.live_state = live_state
+            self.commands = []
+
+        def get_joint_state(self):
+            return self.live_state.copy()
+
+        def command_joint_state(self, target):
+            self.commands.append(target.copy())
+
+    config = GelloZMQConfig(
+        max_joint_delta=0.1,
+        max_gripper_delta=0.2,
+        log_action_diagnostics_every_n=0,
+    )
+    robot = GelloZMQ(config)
+    reset_pose = np.array(
+        [0.08, -0.13, -0.15, -2.42, -0.06, 2.24, -0.79, 1.0],
+        dtype=np.float32,
+    )
+    client = FakeRobotClient(reset_pose)
+    robot.robot = client
+    robot._is_connected = True
+    robot._last_state = np.array(
+        [0.7, 0.6, 0.5, -1.5, 0.4, 1.2, 0.3, 0.0], dtype=np.float32
+    )
+
+    policy_target = reset_pose + 0.05
+    robot.send_action(policy_target)
+
+    np.testing.assert_allclose(client.commands[-1], policy_target)
+    np.testing.assert_allclose(robot._last_state, reset_pose)
+
+
+def test_start_position_target_can_keep_arm_and_open_gripper():
+    from scripts.move_gello_start_position import _build_parser, _target_from_args
+
+    current_arm = np.array(
+        [0.4, -0.3, 0.2, -2.1, 0.1, 1.8, -0.5], dtype=np.float32
+    )
+    args = _build_parser().parse_args(
+        ["--keep-arm", "--target-gripper", "1.0"]
+    )
+
+    target = _target_from_args(args, current_arm)
+
+    np.testing.assert_allclose(target[:7], current_arm)
+    assert target[7] == pytest.approx(1.0)

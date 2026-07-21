@@ -25,10 +25,16 @@ def _parse_floats(text: str) -> tuple[float, ...]:
     return tuple(float(part.strip()) for part in text.split(",") if part.strip())
 
 
-def _target_from_args(args: argparse.Namespace) -> np.ndarray:
-    if args.target_rad and args.target_deg:
+def _target_from_args(
+    args: argparse.Namespace, current_arm: np.ndarray | None = None
+) -> np.ndarray:
+    if args.keep_arm:
+        if current_arm is None:
+            raise ValueError("The current arm state is required with --keep-arm")
+        arm = np.asarray(current_arm, dtype=np.float32)
+    elif args.target_rad and args.target_deg:
         raise ValueError("Use only one of --target-rad or --target-deg")
-    if args.target_rad:
+    elif args.target_rad:
         arm = np.asarray(_parse_floats(args.target_rad), dtype=np.float32)
     elif args.target_deg:
         arm = np.deg2rad(np.asarray(_parse_floats(args.target_deg), dtype=np.float32))
@@ -77,6 +83,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-rad", default=None, help="Comma-separated 7-DoF arm target in radians")
     parser.add_argument("--target-deg", default=None, help="Comma-separated 7-DoF arm target in degrees")
     parser.add_argument("--target-gripper", type=float, default=DEFAULT_GRIPPER)
+    parser.add_argument(
+        "--keep-arm",
+        action="store_true",
+        help="Keep all seven arm joints where they are and move only the gripper",
+    )
     parser.add_argument("--ignore-gripper", action="store_true")
     parser.add_argument("--steps", type=int, default=80, help="Number of interpolation commands")
     parser.add_argument("--period-s", type=float, default=0.04, help="Sleep between interpolation commands")
@@ -89,11 +100,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    target = _target_from_args(args)
     robot = ZMQClientRobot(port=args.robot_port, host=args.robot_host)
     _configure_timeout(robot, args.timeout_ms)
     try:
-        current = np.asarray(robot.get_joint_state(), dtype=np.float32)
+        current_full = np.asarray(robot.get_joint_state(), dtype=np.float32)
+        target = _target_from_args(args, current_full[:7])
+        current = current_full
         if current.shape[0] < target.shape[0]:
             raise ValueError(f"Robot returned {current.shape[0]} joints, target needs {target.shape[0]}")
         current = current[: target.shape[0]]

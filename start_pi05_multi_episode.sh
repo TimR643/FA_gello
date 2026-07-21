@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pi0.5 multi-episode rollout for the GELLO/ZMQ Panda stack.
+# Pi0.5 multi-episode rollout with manual reset for the GELLO/ZMQ Panda stack.
 #
 # Compatible with LeRobot installations that only provide the built-in
 # base/sentry/highlight/dagger strategies. This launcher installs a small
@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Default model source:
 #   Hugging Face repo: TimR643/pick_rectangle_go_up_pi05
-#   Checkpoint folder: checkpoints/002000/pretrained_model
+#   Checkpoint folder: checkpoints/010000/pretrained_model
 #
 # The first run downloads ONLY the selected pretrained_model folder into the
 # Hugging Face cache. Later runs reuse the cache. The whole repository and the
@@ -21,7 +21,7 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-# Hugging Face model source. The current repo contains 002000 and 004000.
+# Hugging Face model source.
 : "${HF_MODEL_REPO:=TimR643/pick_rectangle_go_up_pi05}"
 : "${HF_REVISION:=main}"
 : "${HF_CHECKPOINT:=010000}"
@@ -53,11 +53,14 @@ cd "$REPO_DIR"
 : "${LOG_ACTION_DIAGNOSTICS_EVERY_N:=25}"
 : "${JOINT_INFERENCE_LOG_ENABLED:=false}"
 : "${JOINT_INFERENCE_LOG_DIR:=logs/pi05_inference_joint_logs}"
+: "${RECORD_LEROBOT:=false}"
+: "${INFERENCE_BASE_DIR:=$HOME/lerobot_inferences}"
+: "${LEROBOT_RECORD_PUSH_TO_HUB:=false}"
+: "${LEROBOT_RECORD_STREAMING_ENCODING:=true}"
 : "${NUM_EPISODES:=10}"
-: "${EPISODE_TIME_S:=30}"
+: "${EPISODE_TIME_S:=17}"
 : "${RESET_TIME_S:=15}"
-: "${RESET_MOVE_DURATION_S:=2}"
-: "${RESET_TO_INITIAL_POSITION:=true}"
+: "${FRESH_OBSERVATION_SETTLE_S:=0.10}"
 : "${AUTO_INSTALL_MULTI_EPISODE:=true}"
 : "${INCLUDE_EMPTY_CAMERAS_IN_ROBOT_OBS:=false}"
 : "${INCLUDE_UNMAPPED_POLICY_CAMERAS_AS_BLACK:=false}"
@@ -101,27 +104,37 @@ export PYTHONUNBUFFERED=1
 usage() {
   cat <<EOF_USAGE
 Usage:
-  $0 [--sync] [--rtc] [--help]
+  $0 [--record-lerobot] [--no-record-lerobot] [--sync] [--rtc] [--help]
 
-This script loads Pi0.5 once and executes several autonomous passes.
+This script loads Pi0.5 exactly once and runs several episodes.
+Between episodes, inference is paused and all old action state is discarded.
+The robot is NOT moved automatically during the reset pause.
 
 Episode settings:
-  NUM_EPISODES              Default: 10
-  EPISODE_TIME_S             Default: 100
-  RESET_TIME_S               Default: 15
-  RESET_MOVE_DURATION_S      Default: 2
-  RESET_TO_INITIAL_POSITION  Default: true
+  NUM_EPISODES                 Default: 10
+  EPISODE_TIME_S                Default: 20
+  RESET_TIME_S                  Default: 15
+  FRESH_OBSERVATION_SETTLE_S    Default: 0.10
 
-Workflow:
-  1. Move the robot to the desired starting pose before launching.
-  2. Start this script. LeRobot captures that pose at connection time.
-  3. After each episode, policy and RTC state are cleared.
-  4. The robot returns to the captured starting pose.
-  5. During RESET_TIME_S, place the object back.
+Manual reset workflow:
+  1. Episode ends.
+  2. RTC is paused; policy/processors/action queue and interpolation are reset.
+  3. During RESET_TIME_S, run your separate start-position script in another terminal.
+  4. At the end of the pause, the queue is reset again.
+  5. A fresh observation of the manually positioned robot is fed to RTC while paused.
+  6. Only then is inference resumed for the next episode.
 
-The script adds a local strategy named multi_episode to the active LeRobot
-installation when it is missing. Original files are backed up once with a
-.pre_multi_episode suffix.
+The Pi0.5 model stays loaded for the complete session. No checkpoint reload occurs
+between episodes.
+
+Recording:
+  --record-lerobot             Record every policy pass as one LeRobot episode
+  --no-record-lerobot          Disable recording (default)
+  LEROBOT_RECORD_ROOT          Optional output directory override
+  LEROBOT_RECORD_REPO_ID       Optional repo ID; must start with local/rollout_
+  LEROBOT_RECORD_PUSH_TO_HUB   Default: false
+  LEROBOT_RECORD_STREAMING_ENCODING Default: true
+  The manual reset pause is NOT written into the dataset.
 
 Model:
   HF_MODEL_REPO       Default: TimR643/pick_rectangle_go_up_pi05
@@ -137,6 +150,12 @@ EOF_USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --record-lerobot|--record)
+      RECORD_LEROBOT=true
+      ;;
+    --no-record-lerobot|--no-record)
+      RECORD_LEROBOT=false
+      ;;
     --sync)
       INFERENCE_TYPE=sync
       ;;
@@ -162,6 +181,7 @@ from __future__ import annotations
 
 import inspect
 import py_compile
+import re
 import shutil
 from pathlib import Path
 
@@ -180,27 +200,102 @@ if missing:
     raise SystemExit("LeRobot rollout files fehlen: " + ", ".join(missing))
 
 strategy_source = r'''# Copyright 2025 The HuggingFace Inc. team.
-"Autonomous multi-episode rollout without dataset recording."
+"Multi-episode rollout with manual reset, clean RTC handoff and optional recording."
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 
+from lerobot.datasets import VideoEncodingManager
+from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
 
 from ..context import RolloutContext
-from .core import RolloutStrategy, send_next_action
+from .core import RolloutStrategy, safe_push_to_hub, send_next_action
 
 logger = logging.getLogger(__name__)
 
 
 class MultiEpisodeStrategy(RolloutStrategy):
-    "Keep one policy loaded while executing and resetting multiple episodes."
+    "Keep one policy loaded while executing manually reset episodes."
 
     def setup(self, ctx: RolloutContext) -> None:
         self._init_engine(ctx)
-        logger.info("Multi-episode strategy ready")
+
+        # _init_engine starts the inference backend. Pause it immediately so
+        # no action chunk is generated before episode 1 is explicitly primed.
+        self._engine.pause()
+        self._engine.reset()
+        self._interpolator.reset()
+        self._cached_obs_processed = None
+        logger.info(
+            "Manual-reset multi-episode strategy ready; model remains loaded"
+        )
+
+    def _clear_action_state(self, reason: str) -> None:
+        "Pause inference and discard policy, processor, queue and interpolation state."
+        self._engine.pause()
+        self._engine.reset()
+        self._interpolator.reset()
+        self._cached_obs_processed = None
+        logger.info("%s: RTC/action state cleared", reason)
+
+    def _poll_hardware_during_reset(
+        self,
+        ctx: RolloutContext,
+        duration_s: float,
+        control_interval: float,
+    ) -> None:
+        "Keep robot/camera ZMQ streams alive without notifying inference."
+        if duration_s <= 0:
+            return
+
+        robot = ctx.hardware.robot_wrapper
+        deadline = time.perf_counter() + duration_s
+
+        while (
+            time.perf_counter() < deadline
+            and not ctx.runtime.shutdown_event.is_set()
+        ):
+            loop_start = time.perf_counter()
+
+            # Deliberately do not process or notify this observation. The
+            # policy action queue stays empty while the external reset script
+            # moves the Franka.
+            robot.get_observation()
+
+            dt = time.perf_counter() - loop_start
+            precise_sleep(max(control_interval - dt, 0.0))
+
+    def _prime_from_current_pose(
+        self,
+        ctx: RolloutContext,
+        reason: str,
+    ) -> None:
+        "Clear stale RTC state and provide one fresh post-reset observation."
+        robot = ctx.hardware.robot_wrapper
+
+        # Clear once more immediately after the manual reset pause.
+        self._clear_action_state(reason)
+
+        # RTC can keep its latest observation separately from the action queue.
+        # Force processing of the current manually established pose while the
+        # engine is still paused. Only afterwards may the engine resume.
+        fresh_obs = robot.get_observation()
+        self._cached_obs_processed = None
+        self._process_observation_and_notify(ctx.processors, fresh_obs)
+
+        settle_s = float(self.config.fresh_observation_settle_s)
+        if settle_s > 0:
+            precise_sleep(settle_s)
+
+        logger.info(
+            "%s: fresh current-pose observation installed; queue is clean",
+            reason,
+        )
 
     def run(self, ctx: RolloutContext) -> None:
         cfg = ctx.runtime.cfg
@@ -208,108 +303,216 @@ class MultiEpisodeStrategy(RolloutStrategy):
         robot = ctx.hardware.robot_wrapper
         engine = self._engine
         interpolator = self._interpolator
+        dataset = ctx.data.dataset
+        features = ctx.data.dataset_features
 
         control_interval = interpolator.get_control_interval(cfg.fps)
         num_episodes = int(strategy_cfg.num_episodes)
         episode_time_s = float(strategy_cfg.episode_time_s)
         reset_time_s = float(strategy_cfg.reset_time_s)
+        recording = dataset is not None
+        task_str = cfg.dataset.single_task if cfg.dataset else cfg.task
 
-        for episode_index in range(num_episodes):
-            if ctx.runtime.shutdown_event.is_set():
-                break
-
+        if recording:
             logger.info(
-                "Starting episode %d/%d (%.1f s)",
-                episode_index + 1,
-                num_episodes,
-                episode_time_s,
+                "LeRobot recording enabled: each policy pass becomes one episode"
             )
+        else:
+            logger.info("LeRobot recording disabled")
 
-            engine.reset()
-            interpolator.reset()
-            engine.resume()
-            episode_start = time.perf_counter()
+        encoding_context = (
+            VideoEncodingManager(dataset)
+            if recording
+            else contextlib.nullcontext()
+        )
 
-            while (
-                time.perf_counter() - episode_start < episode_time_s
-                and not ctx.runtime.shutdown_event.is_set()
-            ):
-                loop_start = time.perf_counter()
-                obs = robot.get_observation()
-                obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+        with encoding_context:
+            # Episode 1 also starts with an empty queue and a fresh observation.
+            self._prime_from_current_pose(ctx, "Before episode 1")
 
-                if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
-                    continue
+            for episode_index in range(num_episodes):
+                if ctx.runtime.shutdown_event.is_set():
+                    break
 
-                action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
-                self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+                logger.info(
+                    "Starting episode %d/%d (%.1f s)%s",
+                    episode_index + 1,
+                    num_episodes,
+                    episode_time_s,
+                    " [recording]" if recording else "",
+                )
 
-                dt = time.perf_counter() - loop_start
-                sleep_t = control_interval - dt
-                if sleep_t > 0:
-                    precise_sleep(sleep_t)
-                else:
-                    logger.warning(
-                        "Control loop slower than target: %.1f Hz instead of %.1f Hz",
-                        1.0 / max(dt, 1e-9),
-                        cfg.fps,
+                episode_frames = 0
+
+                # This is the only resume point. The previous action chunk has
+                # been erased and RTC already holds the current robot pose.
+                engine.resume()
+                episode_start = time.perf_counter()
+
+                while (
+                    time.perf_counter() - episode_start < episode_time_s
+                    and not ctx.runtime.shutdown_event.is_set()
+                ):
+                    loop_start = time.perf_counter()
+                    obs = robot.get_observation()
+                    obs_processed = self._process_observation_and_notify(
+                        ctx.processors,
+                        obs,
                     )
 
-            engine.pause()
-            engine.reset()
-            interpolator.reset()
-            logger.info("Episode %d/%d finished", episode_index + 1, num_episodes)
+                    if self._handle_warmup(
+                        cfg.use_torch_compile,
+                        loop_start,
+                        control_interval,
+                    ):
+                        continue
 
-            if episode_index >= num_episodes - 1 or ctx.runtime.shutdown_event.is_set():
-                break
+                    action_dict = send_next_action(
+                        obs_processed,
+                        obs,
+                        ctx,
+                        interpolator,
+                    )
 
-            if strategy_cfg.reset_to_initial_position:
+                    if action_dict is not None:
+                        self._log_telemetry(
+                            obs_processed,
+                            action_dict,
+                            ctx.runtime,
+                        )
+
+                        if recording:
+                            obs_frame = build_dataset_frame(
+                                features,
+                                obs_processed,
+                                prefix=OBS_STR,
+                            )
+                            action_frame = build_dataset_frame(
+                                features,
+                                action_dict,
+                                prefix=ACTION,
+                            )
+                            dataset.add_frame(
+                                {
+                                    **obs_frame,
+                                    **action_frame,
+                                    "task": task_str,
+                                }
+                            )
+                            episode_frames += 1
+
+                    dt = time.perf_counter() - loop_start
+                    sleep_t = control_interval - dt
+                    if sleep_t > 0:
+                        precise_sleep(sleep_t)
+                    else:
+                        logger.warning(
+                            "Control loop slower than target: %.1f Hz instead of %.1f Hz",
+                            1.0 / max(dt, 1e-9),
+                            cfg.fps,
+                        )
+
+                # Stop inference and empty all action state before any dataset
+                # finalisation or manual robot movement can begin.
+                self._clear_action_state(
+                    f"Episode {episode_index + 1}/{num_episodes} finished"
+                )
+
+                if recording:
+                    if episode_frames > 0:
+                        dataset.save_episode()
+                        logger.info(
+                            "LeRobot episode %d saved with %d frames (dataset total: %d)",
+                            episode_index + 1,
+                            episode_frames,
+                            dataset.num_episodes,
+                        )
+                    else:
+                        logger.warning(
+                            "Episode %d produced no ready actions; no empty dataset episode was saved",
+                            episode_index + 1,
+                        )
+
+                if (
+                    episode_index >= num_episodes - 1
+                    or ctx.runtime.shutdown_event.is_set()
+                ):
+                    break
+
                 logger.info(
-                    "Returning robot to captured initial position over %.1f s",
-                    strategy_cfg.reset_move_duration_s,
-                )
-                self._return_to_initial_position(
-                    hw=ctx.hardware,
-                    duration_s=float(strategy_cfg.reset_move_duration_s),
+                    "MANUAL RESET %.1f s: run your separate start-position script now. "
+                    "No policy actions are sent and no dataset frames are recorded.",
+                    reset_time_s,
                 )
 
-            logger.info("Reset phase %.1f s: place the object back now", reset_time_s)
-            reset_start = time.perf_counter()
+                self._poll_hardware_during_reset(
+                    ctx,
+                    duration_s=reset_time_s,
+                    control_interval=control_interval,
+                )
 
-            # Poll robot and cameras throughout reset so remote ZMQ stays active.
-            while (
-                time.perf_counter() - reset_start < reset_time_s
-                and not ctx.runtime.shutdown_event.is_set()
-            ):
-                loop_start = time.perf_counter()
-                robot.get_observation()
-                dt = time.perf_counter() - loop_start
-                precise_sleep(max(control_interval - dt, 0.0))
+                if ctx.runtime.shutdown_event.is_set():
+                    break
+
+                # Critical handoff: clear the queue again and replace the stale
+                # RTC observation with the pose created by the external script.
+                self._prime_from_current_pose(
+                    ctx,
+                    f"Before episode {episode_index + 2}",
+                )
 
         logger.info("All requested episodes finished")
 
     def teardown(self, ctx: RolloutContext) -> None:
+        self._engine.pause()
+        self._engine.reset()
+        self._interpolator.reset()
+        self._cached_obs_processed = None
+
+        dataset = ctx.data.dataset
+        cfg = ctx.runtime.cfg
+
+        if dataset is not None:
+            logger.info("Finalizing LeRobot dataset...")
+            dataset.finalize()
+            logger.info(
+                "Dataset finalized: %s (%d episodes)",
+                dataset.repo_id,
+                dataset.num_episodes,
+            )
+
+            if cfg.dataset and cfg.dataset.push_to_hub:
+                logger.info("Pushing finalized dataset to the Hugging Face Hub...")
+                if safe_push_to_hub(
+                    dataset,
+                    tags=getattr(cfg.dataset, "tags", None),
+                    private=getattr(cfg.dataset, "private", False),
+                ):
+                    logger.info("Dataset uploaded to the Hub")
+
         self._teardown_hardware(
             ctx.hardware,
-            return_to_initial_position=ctx.runtime.cfg.return_to_initial_position,
+            return_to_initial_position=cfg.return_to_initial_position,
         )
-        logger.info("Multi-episode strategy teardown complete")
+        logger.info("Manual-reset multi-episode strategy teardown complete")
+
 '''
 
-config_block = '''
+
+config_block = r'''
 @RolloutStrategyConfig.register_subclass("multi_episode")
 @dataclass
 class MultiEpisodeStrategyConfig(RolloutStrategyConfig):
-    "Run multiple autonomous episodes while keeping the policy loaded."
+    "Run multiple episodes with a manual reset and a clean RTC handoff."
 
     num_episodes: int = 10
-    episode_time_s: float = 100.0
+    episode_time_s: float = 20.0
     reset_time_s: float = 15.0
-    reset_move_duration_s: float = 2.0
-    reset_to_initial_position: bool = True
+    fresh_observation_settle_s: float = 0.10
 
 
 '''
+
 
 def backup_once(path: Path) -> None:
     backup = path.with_name(path.name + ".pre_multi_episode")
@@ -324,12 +527,22 @@ strategies_dir.mkdir(parents=True, exist_ok=True)
 strategy_path.write_text(strategy_source)
 
 configs_text = configs_path.read_text()
-if 'register_subclass("multi_episode")' not in configs_text:
+config_pattern = re.compile(
+    r'@RolloutStrategyConfig\.register_subclass\("multi_episode"\)'
+    r'.*?'
+    r'(?=@RolloutStrategyConfig\.register_subclass\()|\Z',
+    flags=re.DOTALL,
+)
+
+if config_pattern.search(configs_text):
+    configs_text = config_pattern.sub(config_block.lstrip("\n"), configs_text, count=1)
+else:
     marker = '@RolloutStrategyConfig.register_subclass("dagger")'
     if marker not in configs_text:
         raise SystemExit(f"Konnte Einfuegepunkt in {configs_path} nicht finden.")
     configs_text = configs_text.replace(marker, config_block + marker, 1)
-    replace_file(configs_path, configs_text)
+
+replace_file(configs_path, configs_text)
 
 factory_text = factory_path.read_text()
 if "from .multi_episode import MultiEpisodeStrategy" not in factory_text:
@@ -385,6 +598,7 @@ for path in (configs_path, factory_path, init_path, strategy_path):
 print(f"Multi-episode strategy installed in: {rollout_dir}")
 PY_MULTI_EPISODE_INSTALL
 }
+
 
 if [[ "$AUTO_INSTALL_MULTI_EPISODE" == "true" ]]; then
   install_multi_episode_strategy
@@ -840,8 +1054,8 @@ ROLLOUT_STRATEGY=$ROLLOUT_STRATEGY
 NUM_EPISODES=$NUM_EPISODES
 EPISODE_TIME_S=$EPISODE_TIME_S
 RESET_TIME_S=$RESET_TIME_S
-RESET_MOVE_DURATION_S=$RESET_MOVE_DURATION_S
-RESET_TO_INITIAL_POSITION=$RESET_TO_INITIAL_POSITION
+FRESH_OBSERVATION_SETTLE_S=$FRESH_OBSERVATION_SETTLE_S
+RECORD_LEROBOT=$RECORD_LEROBOT
 INFERENCE_TYPE=$INFERENCE_TYPE
 INFERRED_POLICY_IMAGE_NAMES=${INFERRED_POLICY_IMAGE_NAMES:-<none>}
 ROBOT_POLICY_CAMERA_NAMES=$POLICY_CAMERA_NAMES_RESOLVED
@@ -896,9 +1110,9 @@ cmd=(
   --strategy.num_episodes="$NUM_EPISODES"
   --strategy.episode_time_s="$EPISODE_TIME_S"
   --strategy.reset_time_s="$RESET_TIME_S"
-  --strategy.reset_move_duration_s="$RESET_MOVE_DURATION_S"
-  --strategy.reset_to_initial_position="$RESET_TO_INITIAL_POSITION"
+  --strategy.fresh_observation_settle_s="$FRESH_OBSERVATION_SETTLE_S"
 )
+
 
 if [[ "$INFERENCE_TYPE" == "rtc" ]]; then
   cmd+=(
@@ -921,16 +1135,57 @@ else
   exit 2
 fi
 
+if [[ "$RECORD_LEROBOT" == "true" ]]; then
+  RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+  MODEL_NAME_RESOLVED="${MODEL_NAME:-${HF_MODEL_REPO##*/}}"
+  MODEL_NAME_RESOLVED="${MODEL_NAME_RESOLVED//[^A-Za-z0-9._-]/_}"
+
+  LEROBOT_RECORD_ROOT_RESOLVED="${LEROBOT_RECORD_ROOT:-$INFERENCE_BASE_DIR/${MODEL_NAME_RESOLVED}_pi05_inference_${RUN_STAMP}}"
+  LEROBOT_RECORD_REPO_ID_RESOLVED="${LEROBOT_RECORD_REPO_ID:-local/rollout_${MODEL_NAME_RESOLVED}_pi05_inference_${RUN_STAMP}}"
+  LEROBOT_RECORD_FPS_RESOLVED="${LEROBOT_RECORD_FPS:-$FPS}"
+  LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${LEROBOT_RECORD_PUSH_TO_HUB:-false}"
+  LEROBOT_RECORD_STREAMING_ENCODING_RESOLVED="${LEROBOT_RECORD_STREAMING_ENCODING:-true}"
+
+  if [[ "$LEROBOT_RECORD_REPO_ID_RESOLVED" != */rollout_* ]]; then
+    echo "FEHLT: LEROBOT_RECORD_REPO_ID muss mit local/rollout_ bzw. USER/rollout_ beginnen: $LEROBOT_RECORD_REPO_ID_RESOLVED" >&2
+    exit 2
+  fi
+
+  mkdir -p "$(dirname "$LEROBOT_RECORD_ROOT_RESOLVED")"
+
+  cmd+=(
+    --dataset.root="$LEROBOT_RECORD_ROOT_RESOLVED"
+    --dataset.repo_id="$LEROBOT_RECORD_REPO_ID_RESOLVED"
+    --dataset.single_task="$TASK"
+    --dataset.fps="$LEROBOT_RECORD_FPS_RESOLVED"
+    --dataset.push_to_hub="$LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED"
+    --dataset.streaming_encoding="$LEROBOT_RECORD_STREAMING_ENCODING_RESOLVED"
+    --dataset.num_episodes="$NUM_EPISODES"
+    --dataset.episode_time_s="$EPISODE_TIME_S"
+    --dataset.reset_time_s="$RESET_TIME_S"
+  )
+fi
+
 cat <<EOF_MULTI
 
 Multi-episode session:
   Episodes:          $NUM_EPISODES
   Episode duration:  $EPISODE_TIME_S s
-  Reset duration:    $RESET_TIME_S s
-  Reset movement:    $RESET_MOVE_DURATION_S s
-  Return to start:   $RESET_TO_INITIAL_POSITION
+  Manual reset:      $RESET_TIME_S s
+  Record LeRobot:    $RECORD_LEROBOT
+${LEROBOT_RECORD_ROOT_RESOLVED:+  Dataset root:      $LEROBOT_RECORD_ROOT_RESOLVED}
+${LEROBOT_RECORD_REPO_ID_RESOLVED:+  Dataset repo ID:   $LEROBOT_RECORD_REPO_ID_RESOLVED}
 
-The model remains loaded for the complete session.
+During every reset pause:
+  - RTC remains paused.
+  - Policy/processors/action queue and interpolation are empty.
+  - No policy action is sent to the robot.
+  - No reset-pause frames are written to the dataset.
+  - Run your separate robot-positioning script in another terminal.
+
+Immediately before the next episode, the action state is cleared again and
+one fresh observation of the manually positioned robot is supplied to RTC.
+The Pi0.5 model remains loaded for the entire session.
 Press Ctrl+C to stop safely.
 
 EOF_MULTI
