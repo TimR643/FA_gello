@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +39,8 @@ class GelloZMQ(Robot):
         self._joint_log_writer: csv.writer | None = None
         self._joint_log_path: Path | None = None
         self._joint_log_step = 0
-        self._last_joint_log_time_s: float | None = None
+        self._joint_log_start_monotonic_s: float | None = None
+        self._last_joint_log_monotonic_s: float | None = None
         self._last_joint_log_state: np.ndarray | None = None
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
@@ -167,16 +169,22 @@ class GelloZMQ(Robot):
             "w", newline="", encoding="utf-8"
         )
         self._joint_log_writer = csv.writer(self._joint_log_file)
+        # LeRobot continues to use eight policy DOFs internally.  Only the
+        # logger names the final DOF explicitly as the gripper.
+        arm_dofs = self.config.num_dofs - 1
         header = ["step", "timestamp_utc", "time_s"]
         header.extend(
-            f"joint_{index}_position_rad" for index in range(self.config.num_dofs)
+            f"joint_{index}_position_rad" for index in range(arm_dofs)
         )
+        header.append("gripper_state")
         header.extend(
-            f"joint_{index}_velocity_rad_s" for index in range(self.config.num_dofs)
+            f"joint_{index}_velocity_rad_s" for index in range(arm_dofs)
         )
+        header.append("gripper_velocity")
         header.extend(
-            f"joint_{index}_torque_nm" for index in range(self.config.num_dofs)
+            f"joint_{index}_torque_nm" for index in range(arm_dofs)
         )
+        header.append("gripper_torque")
         self._joint_log_writer.writerow(header)
         self._joint_log_file.flush()
         print(f"[gello_zmq] Writing inference joint log to {self._joint_log_path}")
@@ -188,29 +196,58 @@ class GelloZMQ(Robot):
         self._joint_log_writer = None
         self._joint_log_path = None
         self._joint_log_step = 0
-        self._last_joint_log_time_s = None
+        self._joint_log_start_monotonic_s = None
+        self._last_joint_log_monotonic_s = None
         self._last_joint_log_state = None
 
-    def _estimate_joint_velocities(self, state: np.ndarray) -> np.ndarray:
-        now_s = datetime.now(timezone.utc).timestamp()
-        if self._last_joint_log_time_s is None or self._last_joint_log_state is None:
+    def _estimate_joint_velocities(
+        self, state: np.ndarray, sample_monotonic_s: float
+    ) -> np.ndarray:
+        if (
+            self._last_joint_log_monotonic_s is None
+            or self._last_joint_log_state is None
+        ):
             return np.zeros_like(state, dtype=np.float32)
-        dt_s = now_s - self._last_joint_log_time_s
+        dt_s = sample_monotonic_s - self._last_joint_log_monotonic_s
         if dt_s <= 0.0:
             return np.zeros_like(state, dtype=np.float32)
         return ((state - self._last_joint_log_state) / dt_s).astype(np.float32)
 
+    def _resolve_joint_velocities(
+        self,
+        state: np.ndarray,
+        measured: Any | None,
+        sample_monotonic_s: float,
+    ) -> np.ndarray:
+        """Keep valid measurements and estimate missing velocity components."""
+        estimated = self._estimate_joint_velocities(state, sample_monotonic_s)
+        if measured is None:
+            return estimated
+        velocities = np.asarray(measured, dtype=np.float32).reshape(-1)
+        if velocities.shape != (self.config.num_dofs,):
+            return estimated
+        return np.where(np.isfinite(velocities), velocities, estimated).astype(
+            np.float32
+        )
+
     def _write_joint_inference_log(
-        self, state: np.ndarray, velocities: np.ndarray, torques: np.ndarray
+        self,
+        state: np.ndarray,
+        velocities: np.ndarray,
+        torques: np.ndarray,
+        sample_monotonic_s: float,
     ) -> None:
-        now = datetime.now(timezone.utc)
-        now_s = now.timestamp()
+        now_utc = datetime.now(timezone.utc)
+        if self._joint_log_start_monotonic_s is None:
+            self._joint_log_start_monotonic_s = sample_monotonic_s
+        elapsed_s = sample_monotonic_s - self._joint_log_start_monotonic_s
+
         if self._joint_log_writer is not None and self._joint_log_file is not None:
             self._joint_log_writer.writerow(
                 [
                     self._joint_log_step,
-                    now.isoformat(),
-                    f"{now_s:.9f}",
+                    now_utc.isoformat(),
+                    f"{elapsed_s:.9f}",
                     *(f"{float(value):.9f}" for value in state),
                     *(f"{float(value):.9f}" for value in velocities),
                     *(f"{float(value):.9f}" for value in torques),
@@ -218,7 +255,7 @@ class GelloZMQ(Robot):
             )
             self._joint_log_file.flush()
         self._joint_log_step += 1
-        self._last_joint_log_time_s = now_s
+        self._last_joint_log_monotonic_s = sample_monotonic_s
         self._last_joint_log_state = state.copy()
 
     def calibrate(self) -> None:
@@ -231,20 +268,18 @@ class GelloZMQ(Robot):
         if self.robot is None or not self.is_connected:
             raise ConnectionError(f"{self} is not connected")
         raw = self.robot.get_observations()
-        state = np.asarray(
-            raw.get("joint_positions", self.robot.get_joint_state()), dtype=np.float32
-        )
+        raw_positions = raw.get("joint_positions")
+        if raw_positions is None:
+            raw_positions = self.robot.get_joint_state()
+        state = np.asarray(raw_positions, dtype=np.float32)
         if state.shape != (self.config.num_dofs,):
             raise ValueError(
                 f"Expected state shape {(self.config.num_dofs,)}, got {state.shape}"
             )
-        velocities = raw.get("joint_velocities")
-        if velocities is None:
-            velocities = self._estimate_joint_velocities(state)
-        else:
-            velocities = np.asarray(velocities, dtype=np.float32)
-            if velocities.shape != (self.config.num_dofs,):
-                velocities = self._estimate_joint_velocities(state)
+        sample_monotonic_s = time.monotonic()
+        velocities = self._resolve_joint_velocities(
+            state, raw.get("joint_velocities"), sample_monotonic_s
+        )
         torques = np.asarray(
             raw.get("joint_torques", np.full(self.config.num_dofs, np.nan)),
             dtype=np.float32,
@@ -252,7 +287,9 @@ class GelloZMQ(Robot):
         if torques.shape != (self.config.num_dofs,):
             torques = np.full(self.config.num_dofs, np.nan, dtype=np.float32)
         self._last_state = state
-        self._write_joint_inference_log(state, velocities, torques)
+        self._write_joint_inference_log(
+            state, velocities, torques, sample_monotonic_s
+        )
         obs: dict[str, Any] = {
             key: float(value) for key, value in zip(self._joint_feature_names(), state)
         }

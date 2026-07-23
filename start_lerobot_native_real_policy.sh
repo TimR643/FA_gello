@@ -13,7 +13,7 @@ cd "$REPO_DIR"
 
 export CKPT="${CKPT:-/home/tim_st179133/lerobot_outputs/train/pick_rectangle_go_up_smolvlabase/checkpoints/060000/pretrained_model}"
 : "${TASK:=pick up the red rectangle and go above the necessary hight}"
-: "${DURATION:=120}"
+: "${DURATION:=150}"
 : "${NUM_EPISODES:=1}"
 : "${FPS:=10}"
 : "${RETURN_TO_INITIAL_POSITION:=false}"
@@ -64,7 +64,7 @@ LeRobot recording:
 H5 logging:
   H5_LOG_DIR                   H5 output directory
                                default: INFERENCE_BASE_DIR/h5/MODEL_NAME
-  H5_LOG_BASENAME              H5 filename prefix
+  H5_LOG_BASENAME              H5 filename without extension
                                default: MODEL_NAME_TIMESTAMP
   H5_DELETE_INTERMEDIATE_CSV   Delete temporary joint CSV after H5 conversion
                                default: true
@@ -374,7 +374,7 @@ H5_LOG_DIR_RESOLVED="${H5_LOG_DIR:-$INFERENCE_BASE_DIR/h5/${MODEL_NAME}}"
 H5_LOG_BASENAME="${H5_LOG_BASENAME:-${MODEL_NAME}_${RUN_STAMP}}"
 H5_DELETE_INTERMEDIATE_CSV_RESOLVED="${H5_DELETE_INTERMEDIATE_CSV:-true}"
 
-# gello_zmq kann aktuell nur ein Joint-CSV schreiben. Dieses wird nach jeder Episode nach H5 konvertiert.
+# gello_zmq schreibt pro Episode ein Joint-CSV. Die Episoden werden in eine gemeinsame H5-Datei angehängt.
 # Ohne --h5-log ist der Joint-CSV-Logger standardmÃ¤ÃŸig deaktiviert, damit der alte normale Logger entfernt ist.
 if [[ "$H5_LOG" == "true" ]]; then
   JOINT_INFERENCE_LOG_DIR_RESOLVED="${JOINT_INFERENCE_LOG_DIR:-$INFERENCE_BASE_DIR/joint_csv/${MODEL_NAME}_${RUN_STAMP}}"
@@ -455,15 +455,23 @@ convert_latest_joint_csv_to_h5() {
   latest_csv="$(ls -t "$JOINT_INFERENCE_LOG_DIR_RESOLVED"/*.csv 2>/dev/null | head -n 1 || true)"
 
   if [[ -z "$latest_csv" ]]; then
-    echo "WARNUNG: Kein Joint-CSV fÃ¼r H5-Konvertierung gefunden in $JOINT_INFERENCE_LOG_DIR_RESOLVED" >&2
+    echo "WARNUNG: Kein Joint-CSV für H5-Konvertierung gefunden in $JOINT_INFERENCE_LOG_DIR_RESOLVED" >&2
     return 0
   fi
 
-  local h5_path="$H5_LOG_DIR_RESOLVED/${H5_LOG_BASENAME}_episode_${episode}.h5"
+  # Wie bei act_real.h5 werden alle Episoden eines Laufs in eine gemeinsame
+  # Datei geschrieben. frame_index und timestamps beginnen pro Episode bei 0.
+  local h5_path="$H5_LOG_DIR_RESOLVED/${H5_LOG_BASENAME}.h5"
 
-  python - "$latest_csv" "$h5_path" "$CKPT" "$TASK" "$FPS" <<'PY'
+  python - \
+    "$latest_csv" \
+    "$h5_path" \
+    "$CKPT" \
+    "$TASK" \
+    "$FPS" \
+    "$episode" \
+    "$LEROBOT_RECORD_REPO_ID_RESOLVED" <<'PY'
 import sys
-import re
 from pathlib import Path
 
 import h5py
@@ -475,193 +483,213 @@ h5_path = Path(sys.argv[2])
 ckpt = sys.argv[3]
 task = sys.argv[4]
 fps = float(sys.argv[5])
+episode_number = int(sys.argv[6])
+dataset_repo_id = sys.argv[7]
 
 df = pd.read_csv(csv_path)
 h5_path.parent.mkdir(parents=True, exist_ok=True)
 
-def safe_name(name: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_]+", "_", str(name)).strip("_")
-    return name or "unnamed"
+if df.empty:
+    raise RuntimeError(f"CSV enthält keine Messwerte: {csv_path}")
 
-def lower(col):
-    return str(col).lower()
+NUM_ARM_JOINTS = 7
+NUM_DOFS = 8
+GRIPPER_SOURCE_INDEX = 7
 
-def contains_any(col, patterns):
-    c = lower(col)
-    return any(p in c for p in patterns)
-
-def is_action_like(col):
-    return contains_any(col, ["action", "target", "command", "sent", "policy"])
-
-def is_time_col(col):
-    return lower(col) in {
-        "time", "t", "timestamp", "timestamp_s",
-        "wall_time", "wall_time_s",
-        "monotonic_time", "monotonic_time_s",
-        "elapsed", "elapsed_s", "time_s"
-    }
-
-def numeric_cols(cols):
-    out = []
-    for col in cols:
-        try:
-            pd.to_numeric(df[col])
-            out.append(col)
-        except Exception:
-            pass
-    return out
-
-time_cols = [c for c in df.columns if is_time_col(c)]
-
-q_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_position", "joint_pos", "position_rad",
-        "actual_joint", "current_joint", "q_",
-        "q.", "q[", "q"
-    ])
-]
-
-dq_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_velocity", "joint_vel", "velocity_rad",
-        "vel_rad", "dq_", "dq.", "dq[", "dq"
-    ])
-]
-
-tau_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_torque", "torque", "tau_", "tau.",
-        "tau[", "effort"
-    ])
-]
-
-action_cols = [
-    c for c in df.columns
-    if is_action_like(c)
-]
-
-q_cols = numeric_cols(q_cols)
-dq_cols = numeric_cols(dq_cols)
-tau_cols = numeric_cols(tau_cols)
-action_cols = numeric_cols(action_cols)
-
-with h5py.File(h5_path, "w") as f:
-    meta = f.create_group("meta")
-    meta.attrs["source_csv"] = str(csv_path)
-    meta.attrs["checkpoint"] = ckpt
-    meta.attrs["task"] = task
-    meta.attrs["fps"] = fps
-    meta.attrs["note"] = (
-        "All original CSV columns are stored under /raw_csv. "
-        "Recognized joint position, velocity, torque and action columns "
-        "are additionally grouped under /state and /action when detected. "
-        "If velocity columns are identical to positions, they are rejected "
-        "and /state/dq_estimated is computed from /state/q."
+def numeric_column(*names: str) -> np.ndarray:
+    """Read the first available numeric CSV column from names."""
+    for name in names:
+        if name in df.columns:
+            values = pd.to_numeric(df[name], errors="coerce").to_numpy(
+                dtype=np.float64
+            )
+            if values.shape != (len(df),):
+                raise RuntimeError(f"Ungültige Spaltenform für {name}: {values.shape}")
+            return values
+    raise KeyError(
+        "Keine der erwarteten CSV-Spalten vorhanden: " + ", ".join(names)
     )
 
-    raw = f.create_group("raw_csv")
-    for col in df.columns:
-        values = df[col].to_numpy()
-        dset_name = safe_name(col)
+def optional_numeric_column(*names: str, fill: float = np.nan) -> np.ndarray:
+    for name in names:
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce").to_numpy(
+                dtype=np.float64
+            )
+    return np.full(len(df), fill, dtype=np.float64)
 
-        if values.dtype.kind in {"O", "U"}:
-            values = np.array([str(v).encode("utf-8") for v in values])
-            raw.create_dataset(dset_name, data=values)
-        else:
-            raw.create_dataset(dset_name, data=values)
-
-        raw[dset_name].attrs["original_column"] = str(col)
-
-    if time_cols:
-        t = pd.to_numeric(df[time_cols[0]], errors="coerce").to_numpy(dtype=np.float64)
-        f.create_dataset("time", data=t)
-        f["time"].attrs["source_column"] = str(time_cols[0])
-        f["time"].attrs["unit"] = "s"
+# ------------------------------------------------------------------
+# Relative Zeit pro Episode
+# ------------------------------------------------------------------
+if "time_s" in df.columns:
+    timestamps = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(
+        dtype=np.float64
+    )
+    if (
+        not np.all(np.isfinite(timestamps))
+        or np.any(np.diff(timestamps) < 0.0)
+    ):
+        timestamps = np.arange(len(df), dtype=np.float64) / fps
     else:
-        t = np.arange(len(df), dtype=np.float64) / fps
-        f.create_dataset("time", data=t)
-        f["time"].attrs["source_column"] = "estimated_from_fps"
-        f["time"].attrs["unit"] = "s"
+        timestamps = timestamps - timestamps[0]
+else:
+    timestamps = np.arange(len(df), dtype=np.float64) / fps
 
-    state = f.create_group("state")
-    action = f.create_group("action")
+frame_index = np.arange(len(df), dtype=np.int64)
 
-    def write_matrix(group, name, cols, unit):
-        if not cols:
-            return None
-        data = df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
-        dset = group.create_dataset(name, data=data)
-        dset.attrs["columns"] = np.array([str(c).encode("utf-8") for c in cols])
-        dset.attrs["unit"] = unit
-        return data
+# ------------------------------------------------------------------
+# 7 Panda-Armachsen + Joint 7 als expliziter Greifer
+# ------------------------------------------------------------------
+arm_positions = [
+    numeric_column(f"joint_{index}_position_rad")
+    for index in range(NUM_ARM_JOINTS)
+]
+gripper_state = numeric_column(
+    "gripper_state",
+    f"joint_{GRIPPER_SOURCE_INDEX}_position_rad",
+)
 
-    q_data = write_matrix(state, "q", q_cols, "rad")
+arm_velocities = [
+    numeric_column(f"joint_{index}_velocity_rad_s")
+    for index in range(NUM_ARM_JOINTS)
+]
+gripper_velocity = numeric_column(
+    "gripper_velocity",
+    f"joint_{GRIPPER_SOURCE_INDEX}_velocity_rad_s",
+)
 
-    dq_raw_data = None
-    dq_is_valid = False
+arm_torques = [
+    optional_numeric_column(f"joint_{index}_torque_nm")
+    for index in range(NUM_ARM_JOINTS)
+]
+gripper_torque = optional_numeric_column(
+    "gripper_torque",
+    f"joint_{GRIPPER_SOURCE_INDEX}_torque_nm",
+)
 
-    if dq_cols:
-        dq_raw_data = df[dq_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
-        dq_is_valid = True
+# act_real.h5 enthält diese drei Felder. Da hier keine Bildstörung injiziert
+# wird, ist die korrekte Stärke jeweils 0.
+noise_strength = np.zeros(len(df), dtype=np.float64)
+blur_strength = np.zeros(len(df), dtype=np.float64)
+brightness_strength = np.zeros(len(df), dtype=np.float64)
 
-    # Neue Erkenntnis:
-    # In deinem aktuellen CSV sind joint_*_velocity_rad_s identisch zu joint_*_position_rad.
-    # Solche Velocity-Spalten dÃ¼rfen nicht als echte state/dq gespeichert werden.
-    if q_data is not None and dq_raw_data is not None and q_data.shape == dq_raw_data.shape:
-        if np.allclose(q_data, dq_raw_data, equal_nan=True):
-            dq_is_valid = False
-            state.attrs["dq_warning"] = (
-                "Velocity columns were identical to position columns. "
-                "They were not stored as state/dq. Use state/dq_estimated instead."
+feature_names = (
+    [f"joint_pos_{index}" for index in range(1, NUM_ARM_JOINTS + 1)]
+    + ["gripper_state"]
+    + [f"joint_vel_{index}" for index in range(1, NUM_ARM_JOINTS + 1)]
+    + ["gripper_velocity"]
+    + [f"joint_torque_{index}" for index in range(1, NUM_ARM_JOINTS + 1)]
+    + ["gripper_torque"]
+    + ["noise_strength", "blur_strength", "brightness_strength"]
+)
+
+features = np.column_stack(
+    arm_positions
+    + [gripper_state]
+    + arm_velocities
+    + [gripper_velocity]
+    + arm_torques
+    + [gripper_torque]
+    + [noise_strength, blur_strength, brightness_strength]
+).astype(np.float64, copy=False)
+
+if features.shape != (len(df), len(feature_names)):
+    raise RuntimeError(
+        f"Feature-Form stimmt nicht: {features.shape}, "
+        f"erwartet {(len(df), len(feature_names))}"
+    )
+
+# In act_real.h5 ist labels pro Episode konstant. Hier verwenden wir dafür
+# den nullbasierten Episodenindex. Es existiert kein Klassifikator für
+# predicted_labels; -1 bedeutet deshalb ausdrücklich 'nicht verfügbar'.
+labels = np.full(len(df), episode_number - 1, dtype=np.int64)
+predicted_labels = np.full(len(df), -1, dtype=np.int64)
+
+def create_or_append(
+    h5_file: h5py.File,
+    name: str,
+    values: np.ndarray,
+) -> h5py.Dataset:
+    values = np.asarray(values)
+    if name not in h5_file:
+        maxshape = (None,) + values.shape[1:]
+        dataset = h5_file.create_dataset(
+            name,
+            data=values,
+            maxshape=maxshape,
+            chunks=True,
+        )
+        return dataset
+
+    dataset = h5_file[name]
+    if dataset.shape[1:] != values.shape[1:]:
+        raise RuntimeError(
+            f"{name}: bestehende Form {dataset.shape[1:]} passt nicht zu "
+            f"{values.shape[1:]}"
+        )
+    old_length = dataset.shape[0]
+    dataset.resize(old_length + len(values), axis=0)
+    dataset[old_length:] = values
+    return dataset
+
+mode = "a" if h5_path.exists() else "w"
+with h5py.File(h5_path, mode) as f:
+    if "features" in f:
+        existing_names = [
+            value.decode("utf-8") if isinstance(value, bytes) else str(value)
+            for value in f["features"].attrs["feature_names"]
+        ]
+        if existing_names != feature_names:
+            raise RuntimeError(
+                "Feature-Namen der bestehenden H5-Datei stimmen nicht überein.\n"
+                f"Bestehend: {existing_names}\nNeu: {feature_names}"
             )
 
-            rejected = state.create_dataset("dq_rejected_identical_to_q", data=dq_raw_data)
-            rejected.attrs["columns"] = np.array([str(c).encode("utf-8") for c in dq_cols])
-            rejected.attrs["unit_claimed_by_csv"] = "rad/s"
-            rejected.attrs["reason"] = "identical_to_state_q"
-            rejected.attrs["do_not_use_as_velocity"] = True
+    features_dset = create_or_append(f, "features", features)
+    create_or_append(f, "frame_index", frame_index)
+    create_or_append(f, "labels", labels)
+    create_or_append(f, "predicted_labels", predicted_labels)
+    create_or_append(f, "timestamps", timestamps)
 
-    if dq_is_valid and dq_raw_data is not None:
-        dset = state.create_dataset("dq", data=dq_raw_data)
-        dset.attrs["columns"] = np.array([str(c).encode("utf-8") for c in dq_cols])
-        dset.attrs["unit"] = "rad/s"
-        dset.attrs["source"] = "csv_velocity_columns"
+    string_dtype = h5py.string_dtype(encoding="utf-8")
+    features_dset.attrs["feature_names"] = np.asarray(
+        feature_names, dtype=string_dtype
+    )
 
-    write_matrix(state, "tau", tau_cols, "Nm")
-    write_matrix(action, "values", action_cols, "policy_units_or_robot_units")
+    # Metadaten analog zu act_real.h5 plus Roboter-spezifische Angaben.
+    f.attrs["dataset_repo_id"] = dataset_repo_id
+    f.attrs["fault_mode"] = "none"
+    f.attrs["fault_strength_steps"] = 0
+    f.attrs["fault_strength_strategy"] = "none"
+    f.attrs["frame_alignment"] = (
+        "frame_index resets to zero and aligns with each episode"
+    )
+    f.attrs["joint_position_unit"] = "radians"
+    f.attrs["joint_velocity_unit"] = "radians_per_second"
+    f.attrs["joint_torque_unit"] = "newton_meter"
+    f.attrs["timestamp_origin"] = "episode_start"
+    f.attrs["timestamp_unit"] = "seconds"
+    f.attrs["num_arm_joints"] = NUM_ARM_JOINTS
+    f.attrs["num_dofs"] = NUM_DOFS
+    f.attrs["gripper_source_joint_index"] = GRIPPER_SOURCE_INDEX
+    f.attrs["gripper_state_definition"] = (
+        "normalized gripper width: 0=closed, 1=fully open"
+    )
+    f.attrs["labels_semantics"] = "zero_based_episode_index"
+    f.attrs["predicted_labels_semantics"] = "-1 means unavailable"
+    f.attrs["checkpoint"] = ckpt
+    f.attrs["task"] = task
+    f.attrs["fps"] = fps
 
-    # dq_estimated wird immer erzeugt, sobald q vorhanden ist.
-    if q_data is not None and len(q_data) >= 2:
-        t = f["time"][:]
-
-        # Falls time absolute Unix-Zeit ist, ist das okay: np.gradient nutzt nur die AbstÃ¤nde.
-        try:
-            dq_est = np.gradient(q_data, t, axis=0)
-            dq_source = "numerical_gradient_of_state_q_using_time"
-        except Exception:
-            dq_est = np.gradient(q_data, 1.0 / fps, axis=0)
-            dq_source = "numerical_gradient_of_state_q_using_fps"
-
-        dset = state.create_dataset("dq_estimated", data=dq_est)
-        dset.attrs["unit"] = "rad/s"
-        dset.attrs["source"] = dq_source
-        dset.attrs["note"] = (
-            "Estimated from state/q. Prefer real state/dq only if valid velocity "
-            "columns are available and not identical to q."
-        )
-
-print(f"H5 geschrieben: {h5_path}")
+print(
+    f"H5 aktualisiert: {h5_path} | Episode {episode_number} | "
+    f"{len(df)} Frames | features={features.shape[1]}"
+)
 PY
 
   if [[ "$H5_DELETE_INTERMEDIATE_CSV_RESOLVED" == "true" ]]; then
     rm -f "$latest_csv"
-    echo "TemporÃ¤res Joint-CSV gelÃ¶scht: $latest_csv"
+    echo "Temporäres Joint-CSV gelöscht: $latest_csv"
   fi
 }
 

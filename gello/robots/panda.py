@@ -1,15 +1,12 @@
 import time
+import threading
 from typing import Dict
 
 import numpy as np
 
-from gello.robots.robot import Robot
-
-import polymetis
-
-import threading
-
 import torch
+
+from gello.robots.robot import Robot
 
 MAX_OPEN = 0.09
 
@@ -23,25 +20,14 @@ class PandaRobot(Robot):
         self.robot = RobotInterface(
             ip_address=robot_ip,
         )
-        self.gripper = GripperInterface(
-            ip_address="localhost",
-        )
+        self.gripper = GripperInterface(ip_address=robot_ip)
         self.robot.go_home()
         self.robot.start_joint_impedance()
         self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
         time.sleep(1)
-
-        self.robot = polymetis.RobotInterface(ip_address=robot_ip)
-        self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
-
-        self.last_target_width = 0.08
-
-        self.gripper = polymetis.GripperInterface(ip_address=robot_ip)
         self.last_target_width = 0.08
 
         self.gripper_closed = False
-
-        self.gripper
 
         # Manueller Override Status
         self.manual_release = False
@@ -102,12 +88,28 @@ class PandaRobot(Robot):
         return
 
     def get_observations(self) -> Dict[str, np.ndarray]:
-        # Read the arm state once so position, velocity, and measured torque
-        # belong to the same Polymetis control-cycle sample.
+        """Return measured joint data for transport through the ZMQ server.
+
+        Public ``RobotInterface`` getters are used instead of depending solely
+        on a particular version of the RobotState protobuf.  Torque field names
+        changed between Polymetis releases, so they are resolved from the same
+        state sample with a getter fallback.
+        """
         robot_state = self.robot.get_robot_state()
-        arm_positions = np.asarray(robot_state.joint_positions, dtype=np.float32)
-        arm_velocities = np.asarray(robot_state.joint_velocities, dtype=np.float32)
-        arm_torques = np.asarray(robot_state.motor_torques_measured, dtype=np.float32)
+        arm_positions = self._read_arm_vector(
+            robot_state, "joint_positions", getter="get_joint_positions"
+        )
+        arm_velocities = self._read_arm_vector(
+            robot_state, "joint_velocities", getter="get_joint_velocities"
+        )
+        arm_torques = self._read_arm_vector(
+            robot_state,
+            "motor_torques_measured",
+            "joint_torques",
+            "joint_torques_measured",
+            getter="get_joint_torques",
+            required=False,
+        )
         gripper_state = self.gripper.get_state()
         gripper_position = float(gripper_state.width / MAX_OPEN)
 
@@ -125,6 +127,34 @@ class PandaRobot(Robot):
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
         }
+
+    def _read_arm_vector(
+        self,
+        robot_state: object,
+        *field_names: str,
+        getter: str,
+        required: bool = True,
+    ) -> np.ndarray:
+        """Read a seven-axis measurement across supported Polymetis APIs."""
+        for field_name in field_names:
+            value = getattr(robot_state, field_name, None)
+            if value is not None:
+                vector = np.asarray(value, dtype=np.float32).reshape(-1)
+                if vector.shape == (7,):
+                    return vector
+
+        getter_fn = getattr(self.robot, getter, None)
+        if callable(getter_fn):
+            vector = np.asarray(getter_fn(), dtype=np.float32).reshape(-1)
+            if vector.shape == (7,):
+                return vector
+
+        if not required:
+            return np.full(7, np.nan, dtype=np.float32)
+        raise RuntimeError(
+            f"Polymetis did not provide a valid 7-axis measurement via "
+            f"{field_names!r} or {getter}()"
+        )
 
 
 def main():

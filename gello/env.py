@@ -75,6 +75,8 @@ class RobotEnv:
         assert "ee_pos_quat" in robot_obs
         observations["joint_positions"] = robot_obs["joint_positions"]
         observations["joint_velocities"] = robot_obs["joint_velocities"]
+        if "joint_torques" in robot_obs:
+            observations["joint_torques"] = robot_obs["joint_torques"]
         observations["ee_pos_quat"] = robot_obs["ee_pos_quat"]
         observations["gripper_position"] = robot_obs["gripper_position"]
         return observations
