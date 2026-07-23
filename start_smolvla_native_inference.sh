@@ -17,11 +17,12 @@ conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
 REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
 cd "$REPO_DIR"
 
-: "${CKPT:=$HOME/lerobot_outputs/train/precision_peg_in_hole_smolvlabase_wrist/checkpoints/060000/pretrained_model}"
+: "${CKPT:=$HOME/lerobot_outputs/train/sorting_algorithm_cubes_smolvlabase/checkpoints/060000/pretrained_model}"
 # Push the white cube straight forward.
 # Push the white cube forward, then guide it right through the opening.
 # put the peg in the designated hole
-: "${TASK:=Put the peg in the designated hole}"
+#Put all red objects into the red box and all other objects into the white box.
+: "${TASK:=Put all red objects into the red box and all other objects into the white box.}"
 : "${DURATION:=150}"
 : "${NUM_EPISODES:=1}"
 : "${FPS:=10}"
