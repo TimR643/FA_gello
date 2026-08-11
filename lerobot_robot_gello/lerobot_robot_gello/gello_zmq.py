@@ -18,7 +18,7 @@ from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
 from .config_gello_zmq import GelloZMQConfig
-from .h5_logger import H5RobotLogger
+from gello.data_utils.h5_logger import H5RobotLogger
 
 
 class GelloZMQ(Robot):

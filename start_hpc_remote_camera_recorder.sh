@@ -28,6 +28,10 @@ LEROBOT_TASK="${LEROBOT_TASK:-Put the peg in the designated hole}"
 LEROBOT_ROBOT_TYPE="${LEROBOT_ROBOT_TYPE:-panda_gello}"
 LEROBOT_BATCH_ENCODING_SIZE="${LEROBOT_BATCH_ENCODING_SIZE:-1}"
 CAMERA_TIMEOUT_MS="${CAMERA_TIMEOUT_MS:-3000}"
+H5_LOG_ENABLED="${H5_LOG_ENABLED:-true}"
+H5_LOG_DIR="${H5_LOG_DIR:-${LEROBOT_ROOT}_h5}"
+H5_LOG_BASENAME="${H5_LOG_BASENAME:-teleoperation}"
+H5_FLUSH_EVERY="${H5_FLUSH_EVERY:-1}"
 
 cat <<EOF
 Starting HPC remote-camera recorder
@@ -40,11 +44,25 @@ Starting HPC remote-camera recorder
   Repo id:           $LEROBOT_REPO_ID
   FPS:               $LEROBOT_FPS
   Task:              $LEROBOT_TASK
+  H5 logging:        $H5_LOG_ENABLED
+  H5 directory:      $H5_LOG_DIR
+  H5 basename:       $H5_LOG_BASENAME
 EOF
 
 source "$CONDA_SETUP"
 conda activate "$CONDA_ENV"
 cd "$PROJECT_DIR"
+
+if [[ "$H5_LOG_ENABLED" == "true" ]]; then
+  python -c 'import h5py' || {
+    echo "FEHLT: h5py ist im Conda-Environment '$CONDA_ENV' nicht installiert." >&2
+    echo "Installiere es mit: python -m pip install h5py" >&2
+    exit 1
+  }
+  H5_LOG_ARG="--h5-log-enabled"
+else
+  H5_LOG_ARG="--no-h5-log-enabled"
+fi
 
 python experiments/record_lerobot_stream_with_remote_cameras.py \
   --bind-hostname "$BIND_HOSTNAME" \
@@ -60,4 +78,8 @@ python experiments/record_lerobot_stream_with_remote_cameras.py \
   --cameras wrist base \
   --lerobot-streaming-encoding \
   --lerobot-batch-encoding-size "$LEROBOT_BATCH_ENCODING_SIZE" \
-  --camera-timeout-ms "$CAMERA_TIMEOUT_MS"
+  --camera-timeout-ms "$CAMERA_TIMEOUT_MS" \
+  "$H5_LOG_ARG" \
+  --h5-log-dir "$H5_LOG_DIR" \
+  --h5-log-basename "$H5_LOG_BASENAME" \
+  --h5-flush-every "$H5_FLUSH_EVERY"

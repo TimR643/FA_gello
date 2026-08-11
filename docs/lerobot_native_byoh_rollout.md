@@ -74,6 +74,32 @@ index; an interrupted cycle retains `NaN` in its missing action row.
 For native policy rollouts, `./start_lerobot_native_real_policy.sh --h5-log`
 now enables this same direct logger and creates one H5 file per episode.
 
+### Remote-camera recorder on the HPC
+
+For the existing remote-camera workflow, no `lerobot-record` command is
+required. H5 logging is enabled by default in the HPC launcher, so start it as
+before:
+
+```bash
+HPC_CAMERA_HOST=<LAPTOP_IP> ./start_hpc_remote_camera_recorder.sh
+```
+
+Every press of `S` in the laptop control window opens a new H5 episode. After
+`Q`, RIGHT keeps both the LeRobot episode and its H5 file, while LEFT discards
+both. By default, H5 files are written to `${LEROBOT_ROOT}_h5`. The location and
+filename prefix can be changed when starting the HPC recorder:
+
+```bash
+HPC_CAMERA_HOST=<LAPTOP_IP> \
+H5_LOG_DIR="$HOME/lerobot_h5/precision_peg" \
+H5_LOG_BASENAME="precision_peg" \
+./start_hpc_remote_camera_recorder.sh
+```
+
+Set `H5_LOG_ENABLED=false` only when H5 output is not wanted. The laptop stream
+also forwards measured joint torques when the robot provides them; missing
+torques are stored as `NaN` rather than substituted with another signal.
+
 ## Safety defaults
 
 `gello_zmq` still applies the same last-mile safety limiter before commands hit

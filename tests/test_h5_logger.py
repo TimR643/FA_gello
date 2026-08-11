@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 
-from lerobot_robot_gello.h5_logger import H5RobotLogger
+from gello.data_utils.h5_logger import H5RobotLogger
 
 
 def test_h5_logger_writes_observation_and_teleoperation_action(tmp_path):
