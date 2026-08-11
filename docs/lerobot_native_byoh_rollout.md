@@ -44,6 +44,36 @@ Use `CAMERA_NAMES`, not `--robot.cameras`: LeRobot's base `RobotConfig` already
 uses `cameras` for its own camera-config dictionary, so the GELLO plugin keeps
 the simple wrist/base selection in `camera_names` as a comma-separated string such as `wrist,base`.
 
+## H5 logging during teleoperation recording
+
+The H5 logger is part of the `gello_zmq` robot plugin. It is therefore active
+for policy rollouts **and** for the official LeRobot recording loop with a
+teleoperation arm; no temporary CSV conversion or policy checkpoint is needed.
+Add these robot arguments to the `lerobot-record` command you already use:
+
+```bash
+lerobot-record \
+  --robot.type=gello_zmq \
+  --robot.robot_host=127.0.0.1 \
+  --robot.h5_log_enabled=true \
+  --robot.h5_log_path="$HOME/lerobot_recordings/h5/teleop_$(date +%Y%m%d_%H%M%S).h5" \
+  --robot.h5_flush_every=1 \
+  --teleop.type=<DEIN_TELEOPERATOR_TYP> \
+  --dataset.repo_id=<DEINE_REPO_ID> \
+  --dataset.single_task="<DEINE_AUFGABE>"
+```
+
+Keep the remaining robot, camera, teleoperator, and dataset arguments from the
+working recording command. `h5_flush_every=1` makes every sample durable
+immediately; a larger value reduces disk overhead. The file contains
+`/time`, measured `/state/q`, `/state/dq`, `/state/tau`, as well as the raw
+teleoperator command in `/action/raw` and the safety-limited command actually
+sent to the Panda in `/action/sent`. Observation and action rows share their
+index; an interrupted cycle retains `NaN` in its missing action row.
+
+For native policy rollouts, `./start_lerobot_native_real_policy.sh --h5-log`
+now enables this same direct logger and creates one H5 file per episode.
+
 ## Safety defaults
 
 `gello_zmq` still applies the same last-mile safety limiter before commands hit
