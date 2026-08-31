@@ -18,6 +18,7 @@ from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
 from .config_gello_zmq import GelloZMQConfig
+from gello.data_utils.h5_logger import H5RobotLogger
 
 
 class GelloZMQ(Robot):
@@ -40,6 +41,7 @@ class GelloZMQ(Robot):
         self._joint_log_step = 0
         self._last_joint_log_time_s: float | None = None
         self._last_joint_log_state: np.ndarray | None = None
+        self._h5_logger: H5RobotLogger | None = None
         self.executor = SafeJointActionExecutor(
             SafetyConfig(
                 max_joint_delta=config.max_joint_delta,
@@ -125,6 +127,13 @@ class GelloZMQ(Robot):
                 raise ValueError(f"Unsupported GELLO camera {camera!r}; use wrist/base")
         self._preflight_robot_connection()
         self._open_joint_inference_log()
+        if self.config.h5_log_enabled:
+            self._h5_logger = H5RobotLogger(
+                self.config.h5_log_path,
+                num_dofs=self.config.num_dofs,
+                flush_every=self.config.h5_flush_every,
+            )
+            print(f"[gello_zmq] Writing H5 robot log to {self._h5_logger.path}")
         self._is_connected = True
 
     def _configure_zmq_timeout(self, client: Any, *, name: str) -> None:
@@ -150,6 +159,9 @@ class GelloZMQ(Robot):
 
     def disconnect(self) -> None:
         self._close_joint_inference_log()
+        if self._h5_logger is not None:
+            self._h5_logger.close()
+        self._h5_logger = None
         if self.robot is not None:
             self.robot.close()
         self.robot = None
@@ -264,6 +276,10 @@ class GelloZMQ(Robot):
             torques = np.full(self.config.num_dofs, np.nan, dtype=np.float32)
         self._last_state = state
         self._write_joint_inference_log(state, velocities, torques)
+        if self._h5_logger is not None:
+            self._h5_logger.log_observation(
+                datetime.now(timezone.utc).timestamp(), state, velocities, torques
+            )
         obs: dict[str, Any] = {
             key: float(value) for key, value in zip(self._joint_feature_names(), state)
         }
@@ -309,6 +325,12 @@ class GelloZMQ(Robot):
         raw_action = self._extract_action_array(action)
         safe = self.executor.make_safe_target(raw_action, current)
         target = safe.target.astype(np.float32)
+        if self._h5_logger is not None:
+            self._h5_logger.log_action(
+                datetime.now(timezone.utc).timestamp(),
+                np.asarray(raw_action, dtype=np.float32),
+                target,
+            )
         self._log_action_diagnostics(current, safe)
         self.robot.command_joint_state(target)
         return {

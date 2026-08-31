@@ -66,15 +66,7 @@ H5 logging:
                                default: INFERENCE_BASE_DIR/h5/MODEL_NAME
   H5_LOG_BASENAME              H5 filename prefix
                                default: MODEL_NAME_TIMESTAMP
-  H5_DELETE_INTERMEDIATE_CSV   Delete temporary joint CSV after H5 conversion
-                               default: true
-  JOINT_INFERENCE_LOG_DIR      Temporary CSV source directory from gello_zmq
-                               default with --h5-log:
-                                 INFERENCE_BASE_DIR/joint_csv/MODEL_NAME_TIMESTAMP
-                               default without --h5-log:
-                                 logs/inference_joint_logs
-  JOINT_INFERENCE_LOG_ENABLED  Enable/disable temporary gello_zmq joint CSV
-                               default: true with --h5-log, false without --h5-log
+  H5_FLUSH_EVERY               Flush after this many samples (default: 1)
 
 Robot/ZMQ:
   ROBOT_HOST                   default: 127.0.0.1
@@ -372,17 +364,12 @@ LEROBOT_RECORD_PUSH_TO_HUB_RESOLVED="${LEROBOT_RECORD_PUSH_TO_HUB:-false}"
 # H5-Logger:
 H5_LOG_DIR_RESOLVED="${H5_LOG_DIR:-$INFERENCE_BASE_DIR/h5/${MODEL_NAME}}"
 H5_LOG_BASENAME="${H5_LOG_BASENAME:-${MODEL_NAME}_${RUN_STAMP}}"
-H5_DELETE_INTERMEDIATE_CSV_RESOLVED="${H5_DELETE_INTERMEDIATE_CSV:-true}"
+H5_FLUSH_EVERY_RESOLVED="${H5_FLUSH_EVERY:-1}"
 
-# gello_zmq kann aktuell nur ein Joint-CSV schreiben. Dieses wird nach jeder Episode nach H5 konvertiert.
-# Ohne --h5-log ist der Joint-CSV-Logger standardmÃ¤ÃŸig deaktiviert, damit der alte normale Logger entfernt ist.
-if [[ "$H5_LOG" == "true" ]]; then
-  JOINT_INFERENCE_LOG_DIR_RESOLVED="${JOINT_INFERENCE_LOG_DIR:-$INFERENCE_BASE_DIR/joint_csv/${MODEL_NAME}_${RUN_STAMP}}"
-else
-  JOINT_INFERENCE_LOG_DIR_RESOLVED="${JOINT_INFERENCE_LOG_DIR:-logs/inference_joint_logs}"
-fi
-
-JOINT_INFERENCE_LOG_ENABLED_RESOLVED="${JOINT_INFERENCE_LOG_ENABLED:-$H5_LOG}"
+# Der direkte H5-Logger ersetzt die bisherige CSV-Nachkonvertierung. Der alte
+# CSV-Diagnoselogger kann bei Bedarf weiterhin explizit aktiviert werden.
+JOINT_INFERENCE_LOG_DIR_RESOLVED="${JOINT_INFERENCE_LOG_DIR:-logs/inference_joint_logs}"
+JOINT_INFERENCE_LOG_ENABLED_RESOLVED="${JOINT_INFERENCE_LOG_ENABLED:-false}"
 
 cat <<EOF_CONFIG
 Using native LeRobot rollout CLI with robot.type=gello_zmq
@@ -424,14 +411,13 @@ fi
 if [[ "$H5_LOG" == "true" ]]; then
   echo "H5_LOG_DIR=$H5_LOG_DIR_RESOLVED"
   echo "H5_LOG_BASENAME=$H5_LOG_BASENAME"
-  echo "H5_DELETE_INTERMEDIATE_CSV=$H5_DELETE_INTERMEDIATE_CSV_RESOLVED"
+  echo "H5_FLUSH_EVERY=$H5_FLUSH_EVERY_RESOLVED"
   mkdir -p "$H5_LOG_DIR_RESOLVED"
-  mkdir -p "$JOINT_INFERENCE_LOG_DIR_RESOLVED"
 
   python - <<'PY'
 import importlib.util
 missing = []
-for name in ["pandas", "h5py", "numpy"]:
+for name in ["h5py", "numpy"]:
     if importlib.util.find_spec(name) is None:
         missing.append(name)
 if missing:
@@ -443,233 +429,6 @@ if missing:
     )
 PY
 fi
-
-convert_latest_joint_csv_to_h5() {
-  local episode="$1"
-
-  if [[ "$H5_LOG" != "true" ]]; then
-    return 0
-  fi
-
-  local latest_csv
-  latest_csv="$(ls -t "$JOINT_INFERENCE_LOG_DIR_RESOLVED"/*.csv 2>/dev/null | head -n 1 || true)"
-
-  if [[ -z "$latest_csv" ]]; then
-    echo "WARNUNG: Kein Joint-CSV fÃ¼r H5-Konvertierung gefunden in $JOINT_INFERENCE_LOG_DIR_RESOLVED" >&2
-    return 0
-  fi
-
-  local h5_path="$H5_LOG_DIR_RESOLVED/${H5_LOG_BASENAME}_episode_${episode}.h5"
-
-  python - "$latest_csv" "$h5_path" "$CKPT" "$TASK" "$FPS" <<'PY'
-import sys
-import re
-from pathlib import Path
-
-import h5py
-import numpy as np
-import pandas as pd
-
-csv_path = Path(sys.argv[1])
-h5_path = Path(sys.argv[2])
-ckpt = sys.argv[3]
-task = sys.argv[4]
-fps = float(sys.argv[5])
-
-df = pd.read_csv(csv_path)
-h5_path.parent.mkdir(parents=True, exist_ok=True)
-
-def safe_name(name: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_]+", "_", str(name)).strip("_")
-    return name or "unnamed"
-
-def lower(col):
-    return str(col).lower()
-
-def contains_any(col, patterns):
-    c = lower(col)
-    return any(p in c for p in patterns)
-
-def is_action_like(col):
-    return contains_any(col, ["action", "target", "command", "sent", "policy"])
-
-def is_time_col(col):
-    return lower(col) in {
-        "time", "t", "timestamp", "timestamp_s",
-        "wall_time", "wall_time_s",
-        "monotonic_time", "monotonic_time_s",
-        "elapsed", "elapsed_s", "time_s"
-    }
-
-def numeric_cols(cols):
-    out = []
-    for col in cols:
-        try:
-            pd.to_numeric(df[col])
-            out.append(col)
-        except Exception:
-            pass
-    return out
-
-time_cols = [c for c in df.columns if is_time_col(c)]
-
-q_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_position", "joint_pos", "position_rad",
-        "actual_joint", "current_joint", "q_",
-        "q.", "q["
-    ])
-]
-
-dq_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_velocity", "joint_vel", "velocity_rad",
-        "vel_rad", "dq_", "dq.", "dq[", "dq"
-    ])
-]
-
-tau_cols = [
-    c for c in df.columns
-    if not is_action_like(c)
-    and contains_any(c, [
-        "joint_torque", "torque", "tau_", "tau.",
-        "tau[", "effort"
-    ])
-]
-
-action_cols = [
-    c for c in df.columns
-    if is_action_like(c)
-]
-
-q_cols = numeric_cols(q_cols)
-dq_cols = numeric_cols(dq_cols)
-tau_cols = numeric_cols(tau_cols)
-action_cols = numeric_cols(action_cols)
-
-with h5py.File(h5_path, "w") as f:
-    meta = f.create_group("meta")
-    meta.attrs["source_csv"] = str(csv_path)
-    meta.attrs["checkpoint"] = ckpt
-    meta.attrs["task"] = task
-    meta.attrs["fps"] = fps
-    meta.attrs["note"] = (
-        "All original CSV columns are stored under /raw_csv. "
-        "Recognized joint position, velocity, torque and action columns "
-        "are additionally grouped under /state and /action when detected. "
-        "If velocity columns are identical to positions, they are rejected "
-        "and /state/dq_estimated is computed from /state/q."
-    )
-
-    raw = f.create_group("raw_csv")
-    for col in df.columns:
-        values = df[col].to_numpy()
-        dset_name = safe_name(col)
-
-        if values.dtype.kind in {"O", "U"}:
-            values = np.array([str(v).encode("utf-8") for v in values])
-            raw.create_dataset(dset_name, data=values)
-        else:
-            raw.create_dataset(dset_name, data=values)
-
-        raw[dset_name].attrs["original_column"] = str(col)
-
-    if time_cols:
-        t = pd.to_numeric(df[time_cols[0]], errors="coerce").to_numpy(dtype=np.float64)
-        f.create_dataset("time", data=t)
-        f["time"].attrs["source_column"] = str(time_cols[0])
-        f["time"].attrs["unit"] = "s"
-    else:
-        t = np.arange(len(df), dtype=np.float64) / fps
-        f.create_dataset("time", data=t)
-        f["time"].attrs["source_column"] = "estimated_from_fps"
-        f["time"].attrs["unit"] = "s"
-
-    state = f.create_group("state")
-    action = f.create_group("action")
-
-    def write_matrix(group, name, cols, unit):
-        if not cols:
-            return None
-        data = df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
-        dset = group.create_dataset(name, data=data)
-        dset.attrs["columns"] = np.array([str(c).encode("utf-8") for c in cols])
-        dset.attrs["unit"] = unit
-        return data
-
-    q_data = write_matrix(state, "q", q_cols, "rad")
-
-    dq_raw_data = None
-    dq_is_valid = False
-
-    if dq_cols:
-        dq_raw_data = df[dq_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
-        dq_is_valid = True
-
-    # Neue Erkenntnis:
-    # In deinem aktuellen CSV sind joint_*_velocity_rad_s identisch zu joint_*_position_rad.
-    # Solche Velocity-Spalten dÃ¼rfen nicht als echte state/dq gespeichert werden.
-    if q_data is not None and dq_raw_data is not None and q_data.shape == dq_raw_data.shape:
-        if np.allclose(q_data, dq_raw_data, equal_nan=True):
-            dq_is_valid = False
-            state.attrs["dq_warning"] = (
-                "Velocity columns were identical to position columns. "
-                "They were not stored as state/dq. Use state/dq_estimated instead."
-            )
-
-            rejected = state.create_dataset("dq_rejected_identical_to_q", data=dq_raw_data)
-            rejected.attrs["columns"] = np.array([str(c).encode("utf-8") for c in dq_cols])
-            rejected.attrs["unit_claimed_by_csv"] = "rad/s"
-            rejected.attrs["reason"] = "identical_to_state_q"
-            rejected.attrs["do_not_use_as_velocity"] = True
-
-    if dq_is_valid and dq_raw_data is not None:
-        dset = state.create_dataset("dq", data=dq_raw_data)
-        dset.attrs["columns"] = np.array([str(c).encode("utf-8") for c in dq_cols])
-        dset.attrs["unit"] = "rad/s"
-        dset.attrs["source"] = "csv_velocity_columns"
-
-    write_matrix(state, "tau", tau_cols, "Nm")
-    write_matrix(action, "values", action_cols, "policy_units_or_robot_units")
-
-    # dq_estimated wird immer erzeugt, sobald q vorhanden ist.
-    if q_data is not None and len(q_data) >= 2:
-        t = f["time"][:]
-
-        # Falls time absolute Unix-Zeit ist, ist das okay: np.gradient nutzt nur die AbstÃ¤nde.
-        try:
-            dq_est = np.gradient(q_data, t, axis=0)
-            dq_source = "numerical_gradient_of_state_q_using_time"
-        except Exception:
-            dq_est = np.gradient(q_data, 1.0 / fps, axis=0)
-            dq_source = "numerical_gradient_of_state_q_using_fps"
-
-        dset = state.create_dataset("dq_estimated", data=dq_est)
-        dset.attrs["unit"] = "rad/s"
-        dset.attrs["source"] = dq_source
-        dset.attrs["note"] = (
-            "Estimated from state/q. Prefer real state/dq only if valid velocity "
-            "columns are available and not identical to q."
-        )
-
-    if "dq" not in state and "dq_estimated" not in state and "tau" not in state:
-        raise RuntimeError(
-            "H5 logger could not store joint velocity or torque. "
-            "Check the robot ZMQ server's get_observations response."
-        )
-
-print(f"H5 geschrieben: {h5_path}")
-PY
-
-  if [[ "$H5_DELETE_INTERMEDIATE_CSV_RESOLVED" == "true" ]]; then
-    rm -f "$latest_csv"
-    echo "TemporÃ¤res Joint-CSV gelÃ¶scht: $latest_csv"
-  fi
-}
 
 run_rollout_episode() {
   local episode="$1"
@@ -696,6 +455,9 @@ run_rollout_episode() {
     --robot.action_mode="${ACTION_MODE:-absolute_joint_position}"
     --robot.joint_inference_log_dir="$JOINT_INFERENCE_LOG_DIR_RESOLVED"
     --robot.joint_inference_log_enabled="$JOINT_INFERENCE_LOG_ENABLED_RESOLVED"
+    --robot.h5_log_enabled="$H5_LOG"
+    --robot.h5_log_path="$H5_LOG_DIR_RESOLVED/${H5_LOG_BASENAME}_episode_${episode}.h5"
+    --robot.h5_flush_every="$H5_FLUSH_EVERY_RESOLVED"
     --task="$TASK"
     --duration="$DURATION"
   )
@@ -712,8 +474,6 @@ run_rollout_episode() {
 
   local exit_code=0
   "${cmd[@]}" || exit_code=$?
-
-  convert_latest_joint_csv_to_h5 "$episode"
 
   return "$exit_code"
 }

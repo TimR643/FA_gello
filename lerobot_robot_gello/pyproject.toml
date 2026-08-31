@@ -7,7 +7,7 @@ name = "lerobot_robot_gello"
 version = "0.1.0"
 description = "LeRobot Bring-Your-Own-Hardware robot plugin for the GELLO/ZMQ Panda stack"
 requires-python = ">=3.10"
-dependencies = ["gello", "lerobot", "numpy"]
+dependencies = ["gello", "h5py", "lerobot", "numpy"]
 
 [tool.setuptools.packages.find]
 where = ["."]

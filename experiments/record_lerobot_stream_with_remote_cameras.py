@@ -11,12 +11,15 @@ video dataset.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
 import tyro
 import zmq
 
+from gello.data_utils.h5_logger import H5RobotLogger
 from gello.utils.control_utils import LeRobotDatasetWriter, confirm_episode_keep
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.recording_node import ZMQRecordingReceiver
@@ -43,6 +46,10 @@ class Args:
     lerobot_streaming_encoding: bool = True
     lerobot_batch_encoding_size: int = 1
     camera_timeout_ms: int = 3000
+    h5_log_enabled: bool = True
+    h5_log_dir: str = "~/lerobot_data/h5"
+    h5_log_basename: str = "teleoperation"
+    h5_flush_every: int = 1
 
 
 def _configure_camera_timeout(camera: ZMQClientCamera, timeout_ms: int) -> None:
@@ -92,6 +99,7 @@ def _copy_robot_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     for key in (
         "joint_positions",
         "joint_velocities",
+        "joint_torques",
         "ee_pos_quat",
         "gripper_position",
     ):
@@ -141,6 +149,42 @@ def _attach_remote_camera_frames(
     return obs
 
 
+def _message_time_s(message: Dict[str, Any]) -> float:
+    value = message.get("timestamp")
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _open_episode_h5(args: Args) -> H5RobotLogger | None:
+    if not args.h5_log_enabled:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = Path(args.h5_log_dir).expanduser() / f"{args.h5_log_basename}_{stamp}.h5"
+    logger = H5RobotLogger(path, num_dofs=8, flush_every=args.h5_flush_every)
+    print(f"Started H5 episode log: {path}")
+    return logger
+
+
+def _log_h5_frame(
+    logger: H5RobotLogger | None, message: Dict[str, Any], obs: Dict[str, Any]
+) -> None:
+    if logger is None:
+        return
+    q = np.asarray(obs["joint_positions"], dtype=np.float32)
+    nan = np.full(q.shape, np.nan, dtype=np.float32)
+    dq = np.asarray(obs.get("joint_velocities", nan), dtype=np.float32)
+    tau = np.asarray(obs.get("joint_torques", nan), dtype=np.float32)
+    action = np.asarray(message["action"], dtype=np.float32)
+    timestamp_s = _message_time_s(message)
+    logger.log_observation(timestamp_s, q, dq, tau)
+    # The streamed action is already the command used by the GELLO control loop.
+    logger.log_action(timestamp_s, action, action)
+
+
 def main(args: Args) -> None:
     receiver = ZMQRecordingReceiver(host=args.bind_hostname, port=args.port)
     camera_clients = _make_camera_clients(args)
@@ -157,6 +201,7 @@ def main(args: Args) -> None:
     recording = False
     frame_count = 0
     last_images: Dict[str, np.ndarray] = {}
+    h5_logger: H5RobotLogger | None = None
 
     print("Waiting for state/action stream messages...")
     print("Remote camera host:", args.camera_hostname)
@@ -170,11 +215,15 @@ def main(args: Args) -> None:
 
             message_type = message.get("type")
             if message_type == "start":
+                if h5_logger is not None:
+                    h5_logger.close()
+                h5_logger = _open_episode_h5(args)
                 recording = True
                 frame_count = 0
                 print(f"Started streamed episode at {message.get('timestamp')}")
             elif message_type == "frame":
                 if not recording:
+                    h5_logger = _open_episode_h5(args)
                     recording = True
                     frame_count = 0
                     print(
@@ -187,30 +236,47 @@ def main(args: Args) -> None:
                     obs, camera_clients, last_images, args
                 )
                 writer.add_frame(obs, message["action"])
+                _log_h5_frame(h5_logger, message, obs)
                 frame_count += 1
                 if frame_count % 100 == 0:
                     print(f"Recorded {frame_count} streamed frames")
             elif message_type == "stop" and recording:
                 if confirm_episode_keep(frame_count):
                     writer.save_episode()
+                    if h5_logger is not None:
+                        h5_logger.close()
                     print(f"Saved streamed episode with {frame_count} frames")
                 else:
                     writer.discard_episode()
+                    if h5_logger is not None:
+                        h5_path = h5_logger.path
+                        h5_logger.close()
+                        h5_path.unlink(missing_ok=True)
                     print(f"Discarded streamed episode with {frame_count} frames")
+                h5_logger = None
                 recording = False
                 frame_count = 0
             elif message_type == "quit":
                 if recording:
                     if confirm_episode_keep(frame_count):
                         writer.save_episode()
+                        if h5_logger is not None:
+                            h5_logger.close()
                         print(f"Saved streamed episode with {frame_count} frames")
                     else:
                         writer.discard_episode()
+                        if h5_logger is not None:
+                            h5_path = h5_logger.path
+                            h5_logger.close()
+                            h5_path.unlink(missing_ok=True)
                         print(f"Discarded streamed episode with {frame_count} frames")
+                    h5_logger = None
                 break
             else:
                 print(f"Ignoring recording stream message: {message_type}")
     finally:
+        if h5_logger is not None:
+            h5_logger.close()
         writer.finalize()
         _close_camera_clients(camera_clients)
         receiver.close()

@@ -451,6 +451,7 @@ class RecordingStreamInterface:
             for key in (
                 "joint_positions",
                 "joint_velocities",
+                "joint_torques",
                 "ee_pos_quat",
                 "gripper_position",
             )
