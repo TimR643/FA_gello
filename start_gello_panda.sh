@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-# Laptop-side startup for stable two-camera recording:
+# Laptop-side tmux setup for stable two-camera recording.  Commands are filled
+# into the six windows but deliberately not submitted: the operator starts them
+# with Enter in the hardware-safe order documented in README.md.
 # - robot control loop does NOT read/serialize camera frames
 # - wrist/base cameras are exposed as ZMQ camera servers for the HPC recorder
 # - recording stream sends only small robot state/action messages to the HPC
@@ -32,7 +34,7 @@ if [ -n "${GELLO_PORT:-}" ]; then
 fi
 
 cat <<EOF
-Starting laptop-side GELLO session: $SESSION
+Preparing laptop-side GELLO session: $SESSION
   Project dir:          $PROJECT_DIR
   Robot/control host:   $HOST:$ROBOT_PORT
   Camera bind host:     $CAMERA_BIND_HOST
@@ -41,8 +43,14 @@ Starting laptop-side GELLO session: $SESSION
   HPC recorder target:  $HPC_RECORD_HOST:$RECORD_STREAM_PORT
   Control Hz:           $CONTROL_HZ
 
-Make sure the HPC recorder is running, e.g.:
-  HPC_CAMERA_HOST=<LAPTOP_IP> ./start_hpc_remote_camera_recorder.sh
+After tmux opens, press Enter in this order:
+  0 robot -> 1 gripper -> 2 nodes
+  unplug the USB base camera -> 4 camera_wrist
+  reconnect the USB base camera -> 3 camera_base
+  align GELLO with the Panda -> 5 env
+
+For HPC recording, start the recorder on the HPC and then run
+./start_franka_to_hpc_reverse_tunnel.sh in another Franka-laptop terminal.
 EOF
 
 # Kill an old session with the same name, if present.
@@ -53,49 +61,27 @@ tmux new-session -d -s "$SESSION"
 
 # Window 0: Robot
 tmux rename-window -t "$SESSION:0" "robot"
-tmux send-keys -t "$SESSION:0" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:0" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:0" "export HYDRA_FULL_ERROR=1" C-m
-tmux send-keys -t "$SESSION:0" "launch_robot.py robot_client=franka_hardware" C-m
-sleep 8
+tmux send-keys -l -t "$SESSION:0" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && export HYDRA_FULL_ERROR=1 && launch_robot.py robot_client=franka_hardware"
 
 # Window 1: Gripper
 tmux new-window -t "$SESSION:1" -n "gripper"
-tmux send-keys -t "$SESSION:1" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:1" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:1" "launch_gripper.py gripper=franka_hand" C-m
-sleep 5
+tmux send-keys -l -t "$SESSION:1" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && launch_gripper.py gripper=franka_hand"
 
 # Window 2: Robot ZMQ node
 tmux new-window -t "$SESSION:2" -n "nodes"
-tmux send-keys -t "$SESSION:2" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:2" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:2" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:2" "python experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot-port '$ROBOT_PORT' --robot-ip 127.0.0.1" C-m
-sleep 3
+tmux send-keys -l -t "$SESSION:2" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && cd '$PROJECT_DIR' && python experiments/launch_nodes.py --robot panda --hostname '$HOST' --robot-port '$ROBOT_PORT' --robot-ip 127.0.0.1"
 
-# Window 3: Wrist camera ZMQ server, reachable by the HPC recorder
-tmux new-window -t "$SESSION:3" -n "camera_wrist"
-tmux send-keys -t "$SESSION:3" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:3" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:3" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:3" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$WRIST_PORT' --camera-id '$WRIST_CAMERA_ID'" C-m
-sleep 5
+# Window 3: USB base camera. Start only after reconnecting it.
+tmux new-window -t "$SESSION:3" -n "camera_base"
+tmux send-keys -l -t "$SESSION:3" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && cd '$PROJECT_DIR' && python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$BASE_PORT' --camera-id '$BASE_CAMERA_ID'"
 
-# Window 4: Base camera ZMQ server, reachable by the HPC recorder
-tmux new-window -t "$SESSION:4" -n "camera_base"
-tmux send-keys -t "$SESSION:4" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:4" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:4" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:4" "python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$BASE_PORT' --camera-id '$BASE_CAMERA_ID'" C-m
-sleep 3
+# Window 4: Wrist camera. Start while the USB base camera is unplugged.
+tmux new-window -t "$SESSION:4" -n "camera_wrist"
+tmux send-keys -l -t "$SESSION:4" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && cd '$PROJECT_DIR' && python -u experiments/launch_camera_single.py --hostname '$CAMERA_BIND_HOST' --port '$WRIST_PORT' --camera-id '$WRIST_CAMERA_ID'"
 
 # Window 5: Robot control loop, no camera clients, state/action-only recording stream
 tmux new-window -t "$SESSION:5" -n "env"
-tmux send-keys -t "$SESSION:5" "source '$CONDA_SETUP'" C-m
-tmux send-keys -t "$SESSION:5" "conda activate '$CONDA_ENV'" C-m
-tmux send-keys -t "$SESSION:5" "cd '$PROJECT_DIR'" C-m
-tmux send-keys -t "$SESSION:5" "python experiments/run_env.py --agent gello --hostname '$HOST' --robot-port '$ROBOT_PORT' --no-use-wrist-camera --no-use-base-camera --hz '$CONTROL_HZ' --use-save-interface --save-mode recording_stream --record-stream-host '$HPC_RECORD_HOST' --record-stream-port '$RECORD_STREAM_PORT' --record-stream-hwm '$RECORD_STREAM_HWM' --no-record-stream-include-camera-data $GELLO_PORT_ARG" C-m
+tmux send-keys -l -t "$SESSION:5" "source '$CONDA_SETUP' && conda activate '$CONDA_ENV' && cd '$PROJECT_DIR' && python experiments/run_env.py --agent gello --hostname '$HOST' --robot-port '$ROBOT_PORT' --no-use-wrist-camera --no-use-base-camera --hz '$CONTROL_HZ' --use-save-interface --save-mode recording_stream --record-stream-host '$HPC_RECORD_HOST' --record-stream-port '$RECORD_STREAM_PORT' --record-stream-hwm '$RECORD_STREAM_HWM' --no-record-stream-include-camera-data $GELLO_PORT_ARG"
 
-tmux select-window -t "$SESSION:5"
+tmux select-window -t "$SESSION:0"
 tmux attach-session -t "$SESSION"
