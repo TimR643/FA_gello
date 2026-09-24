@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Check whether the live GELLO/Panda ZMQ state is close to the desired recording
+# start pose. Start the normal GELLO robot ZMQ server / SSH tunnel first.
+
+source "${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
+conda activate "${LEROBOT_ENV:-$HOME/miniconda3/envs/lerobot}"
+
+REPO_DIR="${GELLO_REPO_DIR:-$HOME/gello_software}"
+cd "$REPO_DIR"
+
+# go_left_right_...: -0.0905,-0.1567,-0.1225,-2.3384,-0.0876,2.1658,-0.7721
+#pick_rectangle: -0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1034,-0.7830
+#pick rectangle: 0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.1034,-0.7830
+#push_white_cube: "0.0530,0.0429,-0.1260,-2.0204,-0.0417,2.0583,0.7217"
+#peg in hole: 0.0419,-0.1546,-0.0701,-2.2596,-0.0772,2.052,-0.7830"
+#sorting_algorithm: 0.0178,-0.0764,-0.1554,-1.6782,-0.0218,1.6220,+0.6759
+#bottle task: -0.0112,-0.1252,-0.0455,-1.7971,-0.0659,1.6597,+0.7768
+
+#TARGET_ARGS=(--target-rad "${START_JOINTS_RAD:-0.0530,-0.0429,-0.1260,-2.0204,-0.0417,2.0583,-0.7217}")
+TARGET_ARGS=(
+  "--target-rad=-0.0112,-0.1252,-0.0455,-1.7971,-0.0659,1.6597,+0.7768"
+)
+
+python scripts/check_gello_start_position.py \
+  --robot-host "${ROBOT_HOST:-127.0.0.1}" \
+  --robot-port "${ROBOT_PORT:-6001}" \
+  --timeout-ms "${ZMQ_TIMEOUT_MS:-3000}" \
+  "${TARGET_ARGS[@]}" \
+  --target-gripper "${START_GRIPPER:-1.0}" \
+  --arm-tolerance-rad "${START_ARM_TOLERANCE_RAD:-0.025}" \
+  --gripper-tolerance "${START_GRIPPER_TOLERANCE:-0.08}" \
+  "$@"
